@@ -7,7 +7,7 @@ import {
   CalendarDays, LineChart, AlarmClock, ToggleRight, ToggleLeft, ScanEye, Camera, 
   Upload, Play, Pause, RotateCcw, Wrench, Mic, Square, Volume2, X
 } from 'lucide-react';
-import { GoogleGenAI } from "@google/genai";
+import { GoogleGenAI, Modality } from "@google/genai";
 import StatsChart from './components/StatsChart';
 import { 
   AppState, Mission, DailyLog, UserProfile, Goal, ProgressEntry, Alarm, 
@@ -49,6 +49,40 @@ const blobToBase64 = (blob: Blob): Promise<string> => {
   });
 };
 
+// Audio Decoding Helpers
+function base64ToUint8Array(base64: string) {
+  const binaryString = atob(base64);
+  const len = binaryString.length;
+  const bytes = new Uint8Array(len);
+  for (let i = 0; i < len; i++) {
+    bytes[i] = binaryString.charCodeAt(i);
+  }
+  return bytes;
+}
+
+async function playAudioData(base64Data: string) {
+  try {
+    const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
+    const pcmData = base64ToUint8Array(base64Data);
+    
+    // 16-bit PCM conversion
+    const dataInt16 = new Int16Array(pcmData.buffer);
+    const buffer = audioContext.createBuffer(1, dataInt16.length, 24000);
+    const channelData = buffer.getChannelData(0);
+    
+    for (let i = 0; i < dataInt16.length; i++) {
+        channelData[i] = dataInt16[i] / 32768.0;
+    }
+
+    const source = audioContext.createBufferSource();
+    source.buffer = buffer;
+    source.connect(audioContext.destination);
+    source.start();
+  } catch (e) {
+    console.error("Audio playback error:", e);
+  }
+}
+
 const App: React.FC = () => {
   // Main State
   const [state, setState] = useState<AppState>({
@@ -87,6 +121,7 @@ const App: React.FC = () => {
   const [isRecording, setIsRecording] = useState(false);
   const [isProcessingVoice, setIsProcessingVoice] = useState(false);
   const [voiceResponse, setVoiceResponse] = useState('');
+  const [isPlayingAudio, setIsPlayingAudio] = useState(false);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   
@@ -603,7 +638,7 @@ const App: React.FC = () => {
 
       const textResponse = response.text || "Não consegui entender o comando, soldado.";
       setVoiceResponse(textResponse);
-      speakText(textResponse);
+      await speakText(textResponse);
 
     } catch (error) {
       console.error(error);
@@ -613,19 +648,31 @@ const App: React.FC = () => {
     }
   };
 
-  const speakText = (text: string) => {
-    if ('speechSynthesis' in window) {
-      const utterance = new SpeechSynthesisUtterance(text);
-      utterance.lang = 'pt-BR';
-      // Try to find a deeper voice if available for "brutal" tone
-      const voices = window.speechSynthesis.getVoices();
-      if (state.profile.tone === 'brutal') {
-        const deepVoice = voices.find(v => v.name.includes('Google') && v.lang === 'pt-BR') || voices[0];
-        utterance.voice = deepVoice;
-        utterance.pitch = 0.8;
-        utterance.rate = 1.1;
+  const speakText = async (text: string) => {
+    setIsPlayingAudio(true);
+    try {
+      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+      const response = await ai.models.generateContent({
+        model: "gemini-2.5-flash-preview-tts",
+        contents: [{ parts: [{ text: text }] }],
+        config: {
+          responseModalities: [Modality.AUDIO],
+          speechConfig: {
+            voiceConfig: {
+              prebuiltVoiceConfig: { voiceName: 'Charon' } // 'Charon' has a deep, velvety tone
+            }
+          }
+        }
+      });
+
+      const base64Audio = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+      if (base64Audio) {
+        await playAudioData(base64Audio);
       }
-      window.speechSynthesis.speak(utterance);
+    } catch (e) {
+      console.error("Error generating speech:", e);
+    } finally {
+      setIsPlayingAudio(false);
     }
   };
 
@@ -951,17 +998,19 @@ const App: React.FC = () => {
             )}
             <button
               onClick={isRecording ? stopRecording : startRecording}
-              disabled={isProcessingVoice}
+              disabled={isProcessingVoice || isPlayingAudio}
               className={`w-20 h-20 rounded-full flex items-center justify-center transition-all ${
                 isRecording 
                   ? 'bg-red-600 text-white scale-110 shadow-lg shadow-red-500/50' 
-                  : isProcessingVoice
+                  : isProcessingVoice || isPlayingAudio
                     ? 'bg-slate-700 text-slate-400 cursor-wait'
                     : 'bg-emerald-600 text-white hover:bg-emerald-500 hover:scale-105 shadow-lg shadow-emerald-500/30'
               }`}
             >
               {isProcessingVoice ? (
                 <RefreshCw className="animate-spin" size={32} />
+              ) : isPlayingAudio ? (
+                <Volume2 className="animate-pulse" size={32} />
               ) : isRecording ? (
                 <Square fill="currentColor" size={32} />
               ) : (
@@ -973,14 +1022,16 @@ const App: React.FC = () => {
           <div className="text-center min-h-[60px]">
             {isRecording && <p className="text-red-400 font-mono text-sm animate-pulse">GRAVANDO COMANDO...</p>}
             {isProcessingVoice && <p className="text-emerald-400 font-mono text-sm animate-pulse">PROCESSANDO DADOS TÁTICOS...</p>}
-            {!isRecording && !isProcessingVoice && !voiceResponse && (
+            {isPlayingAudio && <p className="text-emerald-400 font-mono text-sm animate-pulse">TRANSMITINDO ÁUDIO...</p>}
+            
+            {!isRecording && !isProcessingVoice && !isPlayingAudio && !voiceResponse && (
               <p className="text-slate-500 text-sm">Toque para falar. Pergunte sobre suas missões, dieta ou status.</p>
             )}
             {voiceResponse && (
               <div className="bg-slate-950/50 p-4 rounded-xl border border-slate-800 text-left">
                 <p className="text-slate-200 text-sm leading-relaxed">{voiceResponse}</p>
                 <div className="flex justify-end mt-2">
-                  <button onClick={() => speakText(voiceResponse)} className="text-emerald-500 p-1 hover:text-emerald-400">
+                  <button onClick={() => speakText(voiceResponse)} disabled={isPlayingAudio} className="text-emerald-500 p-1 hover:text-emerald-400 disabled:opacity-50">
                     <Volume2 size={16} />
                   </button>
                 </div>
