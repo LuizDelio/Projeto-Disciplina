@@ -1,56 +1,15 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { 
-  Flame, Clock, Skull, User, Sword, Scroll, FlaskConical, BrainCircuit, Zap, Dumbbell, 
-  Plus, CheckCircle2, Trash2, Target, Utensils, Timer, TrendingUp, ShoppingBag, 
-  UserSquare2, XCircle, ChefHat, RefreshCw, Banknote, Youtube, MessageSquare, 
-  Book, Bot, Send, Save, BicepsFlexed, Activity, ClipboardList, AlertOctagon, 
-  CalendarDays, LineChart, AlarmClock, ToggleRight, ToggleLeft, ScanEye, Camera, 
-  Upload, Play, Pause, RotateCcw, Wrench, Mic, Square, Volume2, X
-} from 'lucide-react';
-import { GoogleGenAI, Modality } from "@google/genai";
-import StatsChart from './components/StatsChart';
-import { 
-  AppState, Mission, DailyLog, UserProfile, Goal, ProgressEntry, Alarm, 
-  WorkoutPlan, ExerciseLog, DailyWorkoutFeedback, ChatMessage, JournalEntry, 
-  Recipe, Reward, AiTone 
-} from './types';
-import { BASE_MISSIONS, REWARDS, REALITY_CHECKS } from './constants';
+import { Sidebar, TopBar } from './components/Layout';
+import { Tools } from './components/Tools';
+import { db } from './services/db';
+import { UserProfile, Tab, Mission, TrainingPlan, DietPlan, LeaderboardEntry, MartialArtsPlan } from './types';
+import { geminiService } from './services/geminiService';
+import { CheckCircle2, Circle, Send, BrainCircuit, Lock, Salad, Trophy, User as UserIcon, Target, Dumbbell, LogOut, Flame, Mail, Chrome, Share2, Trash2, Plus, X, RefreshCw, AlertCircle, Bot, Palette, Settings, Wallet, Utensils, Volume2, StopCircle, Mic, ShoppingCart, Zap, Shield, Sparkles, Swords, PlayCircle } from 'lucide-react';
+import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 
-const XP_PER_LEVEL = 1000;
+// --- Audio Helper Functions ---
 
-const Card: React.FC<{ children?: React.ReactNode; className?: string }> = ({ children, className = '' }) => (
-  <div className={`bg-slate-900/50 border border-slate-800 rounded-xl ${className}`}>
-    {children}
-  </div>
-);
-
-const TabButton = ({ active, onClick, icon: Icon, label }: { active: boolean; onClick: () => void; icon: React.ElementType; label: string }) => (
-  <button 
-    onClick={onClick}
-    className={`flex items-center gap-3 p-3 rounded-xl transition-all w-full md:w-auto ${
-      active ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-900/20' : 'text-slate-400 hover:bg-slate-800 hover:text-slate-200'
-    }`}
-  >
-    <Icon size={20} />
-    <span className="font-bold text-sm hidden md:inline">{label}</span>
-  </button>
-);
-
-// Helper to convert Blob to Base64
-const blobToBase64 = (blob: Blob): Promise<string> => {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onloadend = () => {
-      const base64String = (reader.result as string).split(',')[1];
-      resolve(base64String);
-    };
-    reader.onerror = reject;
-    reader.readAsDataURL(blob);
-  });
-};
-
-// Audio Decoding Helpers
-function base64ToUint8Array(base64: string) {
+function decodeBase64(base64: string) {
   const binaryString = atob(base64);
   const len = binaryString.length;
   const bytes = new Uint8Array(len);
@@ -60,494 +19,159 @@ function base64ToUint8Array(base64: string) {
   return bytes;
 }
 
-async function playAudioData(base64Data: string) {
-  try {
-    const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
-    const pcmData = base64ToUint8Array(base64Data);
-    
-    // 16-bit PCM conversion
-    const dataInt16 = new Int16Array(pcmData.buffer);
-    const buffer = audioContext.createBuffer(1, dataInt16.length, 24000);
-    const channelData = buffer.getChannelData(0);
-    
-    for (let i = 0; i < dataInt16.length; i++) {
-        channelData[i] = dataInt16[i] / 32768.0;
-    }
+async function decodeAudioData(
+  data: Uint8Array,
+  ctx: AudioContext,
+  sampleRate: number,
+  numChannels: number,
+): Promise<AudioBuffer> {
+  const dataInt16 = new Int16Array(data.buffer);
+  const frameCount = dataInt16.length / numChannels;
+  const buffer = ctx.createBuffer(numChannels, frameCount, sampleRate);
 
-    const source = audioContext.createBufferSource();
-    source.buffer = buffer;
-    source.connect(audioContext.destination);
-    source.start();
-  } catch (e) {
-    console.error("Audio playback error:", e);
+  for (let channel = 0; channel < numChannels; channel++) {
+    const channelData = buffer.getChannelData(channel);
+    for (let i = 0; i < frameCount; i++) {
+      channelData[i] = dataInt16[i * numChannels + channel] / 32768.0;
+    }
   }
+  return buffer;
 }
 
-const App: React.FC = () => {
-  // Main State
-  const [state, setState] = useState<AppState>({
-    points: 0,
-    xp: 0,
-    strikes: 0,
-    missions: BASE_MISSIONS,
-    logs: [],
-    hardcoreMode: false,
-    lastResetDate: new Date().toISOString().split('T')[0],
-    profile: {
-      name: '',
-      age: '',
-      weight: '',
-      height: '',
-      tone: 'mentor'
-    },
-    goals: [],
-    progressLogs: [],
-    alarms: [],
-    exerciseLogs: [],
-    workoutFeedbacks: [],
-    workoutChatHistory: [],
-    workoutJournal: [],
-    dietRecipes: []
+function blobToBase64(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      const result = reader.result as string;
+      const base64 = result.split(',')[1];
+      resolve(base64);
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
   });
+}
 
-  // UI State
-  const [activeTab, setActiveTab] = useState('missions');
-  const [showAddModal, setShowAddModal] = useState(false);
-  const [newGoalName, setNewGoalName] = useState('');
-  const [isAnalyzing, setIsAnalyzing] = useState(false);
-  
-  // Voice Assistant State
-  const [showVoiceModal, setShowVoiceModal] = useState(false);
-  const [isRecording, setIsRecording] = useState(false);
-  const [isProcessingVoice, setIsProcessingVoice] = useState(false);
-  const [voiceResponse, setVoiceResponse] = useState('');
-  const [isPlayingAudio, setIsPlayingAudio] = useState(false);
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const audioChunksRef = useRef<Blob[]>([]);
-  
-  // Diet State
-  const [dietGoal, setDietGoal] = useState('Perder Peso (Definição)');
-  const [dietLikes, setDietLikes] = useState('');
-  const [dietAvailable, setDietAvailable] = useState('');
-  const [dietBudget, setDietBudget] = useState('');
-  const [isGeneratingDiet, setIsGeneratingDiet] = useState(false);
+// --- Constants & Config ---
 
-  // Workout State
-  const [workoutSubTab, setWorkoutSubTab] = useState('plan');
-  const [chatInput, setChatInput] = useState('');
-  const [isChatting, setIsChatting] = useState(false);
-  const chatEndRef = useRef<HTMLDivElement>(null);
-  
-  const [journalInput, setJournalInput] = useState('');
-  const [journalAnalysisResult, setJournalAnalysisResult] = useState<string | null>(null);
-  const [isAnalyzingJournal, setIsAnalyzingJournal] = useState(false);
-  
-  const [isGeneratingWorkout, setIsGeneratingWorkout] = useState(false);
-  const [workoutGoal, setWorkoutGoal] = useState('Hipertrofia (Ganho de Massa)');
-  const [workoutLevel, setWorkoutLevel] = useState('Intermediário');
-  const [workoutDays, setWorkoutDays] = useState('4');
-  const [workoutTimeAvailable, setWorkoutTimeAvailable] = useState('60');
-  const [workoutEquipment, setWorkoutEquipment] = useState('Academia Completa');
-  const [workoutWeakPoints, setWorkoutWeakPoints] = useState('');
-  const [workoutFavorites, setWorkoutFavorites] = useState('');
-  const [workoutStylePreference, setWorkoutStylePreference] = useState('Padrão (Balanced)');
-  const [workoutInjuries, setWorkoutInjuries] = useState('');
-  
-  const [dailyRPE, setDailyRPE] = useState(5);
-  const [dailyNotes, setDailyNotes] = useState('');
-  const [currentInputs, setCurrentInputs] = useState<Record<string, string>>({});
-  const [workoutFeedback, setWorkoutFeedback] = useState('');
+const THEMES: Record<string, { bg: string, text: string, name: string, hex: string, price: number }> = {
+  emerald: { bg: 'bg-emerald-500', text: 'text-emerald-500', name: 'Emerald (Padrão)', hex: '#10b981', price: 0 },
+  blue:    { bg: 'bg-blue-500',    text: 'text-blue-500',    name: 'Operação Blue',    hex: '#3b82f6', price: 100 },
+  violet:  { bg: 'bg-violet-500',  text: 'text-violet-500',  name: 'Cyber Violet',  hex: '#8b5cf6', price: 150 },
+  rose:    { bg: 'bg-rose-500',    text: 'text-rose-500',    name: 'Hardcore Rose',    hex: '#f43f5e', price: 0 }, // Free for hardcore
+  amber:   { bg: 'bg-amber-500',   text: 'text-amber-500',   name: 'Solar Amber',   hex: '#f59e0b', price: 120 },
+  cyan:    { bg: 'bg-cyan-500',    text: 'text-cyan-500',    name: 'Neon Cyan',    hex: '#06b6d4', price: 120 },
+};
 
-  // Tools State
-  const [activeTool, setActiveTool] = useState('pomodoro');
-  const [pomoTime, setPomoTime] = useState(25 * 60);
-  const [pomoMode, setPomodoroMode] = useState<'focus' | 'short' | 'long'>('focus');
-  const [pomoIsActive, setPomoIsActive] = useState(false);
-  
-  const [newAlarmTime, setNewAlarmTime] = useState('');
-  
-  const [swTime, setSwTime] = useState(0);
-  const [swIsActive, setSwIsActive] = useState(false);
+interface ShopItemDef {
+  id: string;
+  name: string;
+  description: string;
+  price: number;
+  icon: any;
+  type: 'theme' | 'consumable';
+  value?: string;
+}
 
-  // Motivation State
-  const [motivationSpeech, setMotivationSpeech] = useState('');
-  const [isGeneratingMotivation, setIsGeneratingMotivation] = useState(false);
+const SHOP_ITEMS: ShopItemDef[] = [
+  { id: 'theme_blue', name: 'Interface Blue', description: 'Personalização visual azul tático.', price: 100, icon: Palette, type: 'theme', value: 'blue' },
+  { id: 'theme_violet', name: 'Interface Violet', description: 'Personalização visual cyberpunk.', price: 150, icon: Palette, type: 'theme', value: 'violet' },
+  { id: 'theme_amber', name: 'Interface Amber', description: 'Personalização visual de alerta.', price: 120, icon: Palette, type: 'theme', value: 'amber' },
+  { id: 'theme_cyan', name: 'Interface Cyan', description: 'Personalização visual futurista.', price: 120, icon: Palette, type: 'theme', value: 'cyan' },
+  { id: 'streak_freeze', name: 'Escudo de Streak', description: 'Protege sua sequência por 1 dia perdido.', price: 300, icon: Shield, type: 'consumable' },
+  { id: 'xp_boost', name: 'XP Booster 2x', description: 'Dobro de XP por 24 horas.', price: 500, icon: Zap, type: 'consumable' },
+];
 
-  // Progress State
-  const [isAnalyzingBody, setIsAnalyzingBody] = useState(false);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const faceInputRef = useRef<HTMLInputElement>(null);
+// --- Components ---
 
-  // Animation State
-  const [scoreBump, setScoreBump] = useState(false);
-  const [pointAnimation, setPointAnimation] = useState<{ label: string; value: number } | null>(null);
-  const [timeLeft, setTimeLeft] = useState('');
+const ToastNotification: React.FC<{ message: string, accentColor: string }> = ({ message, accentColor }) => (
+  <div className={`fixed bottom-8 right-8 ${accentColor} text-black font-bold px-6 py-4 rounded-xl shadow-[0_0_20px_rgba(0,0,0,0.3)] z-50 animate-[slideIn_0.3s_ease-out] flex items-center gap-3`}>
+    <div className="bg-black/10 p-2 rounded-full">
+      <Flame size={20} />
+    </div>
+    <span className="text-lg">{message}</span>
+  </div>
+);
 
-  // Computed
-  const currentLevel = Math.floor(state.xp / XP_PER_LEVEL) + 1;
-  const xpProgress = state.xp % XP_PER_LEVEL;
-  const xpPercent = (xpProgress / XP_PER_LEVEL) * 100;
-  
-  // Logic for Streak (simplified)
-  const calculateStreak = () => {
-    // This is a placeholder logic. Real logic would analyze dates in state.logs
-    return 0; 
-  };
-  const currentStreak = calculateStreak();
-
-  const completedMissionIds = new Set(
-    state.logs
-      .filter(l => l.date === new Date().toISOString().split('T')[0] && l.status === 'completed')
-      .map(l => l.missionId)
-  );
-
-  const failedMissionIds = new Set(
-    state.logs
-      .filter(l => l.date === new Date().toISOString().split('T')[0] && l.status === 'failed')
-      .map(l => l.missionId)
-  );
-
-  // Effects
-  useEffect(() => {
-    const timer = setInterval(() => {
-      const now = new Date();
-      const endOfDay = new Date();
-      endOfDay.setHours(23, 59, 59, 999);
-      const diff = endOfDay.getTime() - now.getTime();
-      
-      const hours = Math.floor(diff / (1000 * 60 * 60));
-      const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
-      const seconds = Math.floor((diff % (1000 * 60)) / 1000);
-      
-      setTimeLeft(`${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`);
-    }, 1000);
-    return () => clearInterval(timer);
-  }, []);
-
-  useEffect(() => {
-    let interval: ReturnType<typeof setInterval> | undefined;
-    if (pomoIsActive && pomoTime > 0) {
-      interval = setInterval(() => setPomoTime(t => t - 1), 1000);
-    } else if (pomoTime === 0) {
-      setPomoIsActive(false);
-    }
-    return () => clearInterval(interval);
-  }, [pomoIsActive, pomoTime]);
-
-  useEffect(() => {
-    let interval: ReturnType<typeof setInterval> | undefined;
-    if (swIsActive) {
-      interval = setInterval(() => setSwTime(t => t + 10), 10);
-    }
-    return () => clearInterval(interval);
-  }, [swIsActive]);
-
-  // Handlers
-  const handleProfileChange = (field: keyof UserProfile, value: string) => {
-    setState(prev => ({ ...prev, profile: { ...prev.profile, [field]: value } }));
-  };
-
-  const handleToneChange = (tone: AiTone) => {
-    setState(prev => ({ ...prev, profile: { ...prev.profile, tone } }));
-  };
-
-  const handleAIAnalysis = async () => {
-    setIsAnalyzing(true);
-    try {
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-      const response = await ai.models.generateContent({
-        model: 'gemini-3-flash-preview',
-        contents: `Analyze this user profile and provide a harsh, disciplined strategic analysis: ${JSON.stringify(state.profile)}`,
-      });
-      setState(prev => ({ ...prev, aiAnalysis: response.text }));
-    } catch (error) {
-      console.error(error);
-    } finally {
-      setIsAnalyzing(false);
-    }
-  };
-
-  const handleAddGoal = () => {
-    if (!newGoalName.trim()) return;
-    const newGoal: Goal = {
-      id: Date.now().toString(),
-      label: newGoalName,
-      completed: false,
-      rewardPoints: 100 // Default
-    };
-    setState(prev => ({ ...prev, goals: [...prev.goals, newGoal] }));
-    setNewGoalName('');
-  };
-
-  const handleCompleteGoal = (id: string) => {
-    setState(prev => {
-      const goal = prev.goals.find(g => g.id === id);
-      if (!goal || goal.completed) return prev;
-      return {
-        ...prev,
-        points: prev.points + goal.rewardPoints,
-        xp: prev.xp + 100,
-        goals: prev.goals.map(g => g.id === id ? { ...g, completed: true } : g)
-      };
+// Simple Markdown Parser for Rich Text rendering without heavy libraries
+const MarkdownRenderer: React.FC<{ content: string; accentColor: string }> = ({ content, accentColor }) => {
+  const parseBold = (text: string) => {
+    const parts = text.split(/(\*\*.*?\*\*)/g);
+    return parts.map((part, index) => {
+      if (part.startsWith('**') && part.endsWith('**')) {
+        return <strong key={index} className={`${accentColor.replace('bg-', 'text-')} font-bold`}>{part.slice(2, -2)}</strong>;
+      }
+      return part;
     });
-    triggerPointAnimation(100, "META COMPLETADA");
   };
 
-  const handleDeleteGoal = (id: string) => {
-    setState(prev => ({ ...prev, goals: prev.goals.filter(g => g.id !== id) }));
-  };
+  const lines = content.split('\n');
 
-  const handleFail = (mission: Mission) => {
-    const log: DailyLog = {
-      date: new Date().toISOString().split('T')[0],
-      missionId: mission.id,
-      status: 'failed',
-      pointsChange: 0
-    };
-    setState(prev => ({ ...prev, logs: [...prev.logs, log], strikes: prev.strikes + 1 }));
-  };
-
-  const handleComplete = (mission: Mission) => {
-    const log: DailyLog = {
-      date: new Date().toISOString().split('T')[0],
-      missionId: mission.id,
-      status: 'completed',
-      pointsChange: mission.points
-    };
-    setState(prev => ({ 
-      ...prev, 
-      logs: [...prev.logs, log], 
-      points: prev.points + mission.points,
-      xp: prev.xp + 10 
-    }));
-    triggerPointAnimation(mission.points, mission.label);
-  };
-
-  const handleDeleteMission = (id: string) => {
-    setState(prev => ({ ...prev, missions: prev.missions.filter(m => m.id !== id) }));
-  };
-
-  const handleGenerateDiet = async () => {
-    setIsGeneratingDiet(true);
-    try {
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-      const prompt = `Generate 3 cheap and healthy recipes based on: Goal=${dietGoal}, Likes=${dietLikes}, Available=${dietAvailable}, Budget=${dietBudget}. Return JSON with name, calories, costEstimate, time, ingredients (array), instructions (array), videoQuery, benefits.`;
-      
-      const response = await ai.models.generateContent({
-        model: 'gemini-3-flash-preview',
-        contents: prompt,
-        config: { responseMimeType: "application/json" }
-      });
-      
-      const recipes = JSON.parse(response.text || '[]');
-      setState(prev => ({ ...prev, dietRecipes: recipes }));
-    } catch (e) {
-      console.error(e);
-    } finally {
-      setIsGeneratingDiet(false);
-    }
-  };
-
-  const handleChatSubmit = async () => {
-    if (!chatInput.trim()) return;
-    const userMsg: ChatMessage = { role: 'user', text: chatInput, timestamp: Date.now() };
-    setState(prev => ({ ...prev, workoutChatHistory: [...prev.workoutChatHistory, userMsg] }));
-    setChatInput('');
-    setIsChatting(true);
-
-    try {
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-      const chat = ai.chats.create({ model: 'gemini-3-flash-preview' });
-      // Feed history... (simplified here just sending last message for brevity/context limitation in stateless)
-      const result = await chat.sendMessage({ message: userMsg.text });
-      const botMsg: ChatMessage = { role: 'model', text: result.text, timestamp: Date.now() };
-      setState(prev => ({ ...prev, workoutChatHistory: [...prev.workoutChatHistory, botMsg] }));
-    } catch (e) {
-      console.error(e);
-    } finally {
-      setIsChatting(false);
-    }
-  };
-
-  const handleAddJournal = () => {
-    if (!journalInput.trim()) return;
-    const entry: JournalEntry = {
-      id: Date.now().toString(),
-      date: new Date().toISOString().split('T')[0],
-      text: journalInput,
-      timestamp: Date.now()
-    };
-    setState(prev => ({ ...prev, workoutJournal: [...prev.workoutJournal, entry] }));
-    setJournalInput('');
-  };
-
-  const handleAnalyzeJournal = async () => {
-    setIsAnalyzingJournal(true);
-    try {
-       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-       const journalText = state.workoutJournal.slice(-3).map(j => j.text).join('\n');
-       const response = await ai.models.generateContent({
-         model: 'gemini-3-flash-preview',
-         contents: `Analyze these workout journal entries and suggest improvements: ${journalText}`
-       });
-       setJournalAnalysisResult(response.text);
-    } catch (e) { console.error(e); }
-    finally { setIsAnalyzingJournal(false); }
-  };
-
-  const handleSmartPlanAdjustment = () => {
-    // Placeholder for AI plan adjustment logic
-    alert("Funcionalidade de ajuste inteligente em desenvolvimento.");
-  };
-
-  const handleGenerateWorkout = async () => {
-    setIsGeneratingWorkout(true);
-    try {
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-      const prompt = `Create a workout plan. Goal: ${workoutGoal}, Level: ${workoutLevel}, Days: ${workoutDays}, Time: ${workoutTimeAvailable}, Equipment: ${workoutEquipment}. Return JSON matching the WorkoutPlan interface structure (overview, days array with exercises).`;
-      const response = await ai.models.generateContent({
-        model: 'gemini-3-flash-preview',
-        contents: prompt,
-        config: { responseMimeType: "application/json" }
-      });
-      const planData = JSON.parse(response.text);
-      const newPlan: WorkoutPlan = {
-        id: Date.now().toString(),
-        createdAt: new Date().toISOString(),
-        ...planData
-      };
-      setState(prev => ({ ...prev, workoutPlan: newPlan }));
-    } catch (e) {
-      console.error(e);
-    } finally {
-      setIsGeneratingWorkout(false);
-    }
-  };
-
-  const resetWorkout = () => {
-    setState(prev => ({ ...prev, workoutPlan: undefined }));
-  };
-
-  const handleDailyFeedback = () => {
-    const feedback: DailyWorkoutFeedback = {
-      date: new Date().toISOString().split('T')[0],
-      rpe: dailyRPE,
-      notes: dailyNotes
-    };
-    setState(prev => ({ ...prev, workoutFeedbacks: [...prev.workoutFeedbacks, feedback] }));
-    setDailyNotes('');
-    alert("Feedback salvo.");
-  };
-
-  const handleSaveLoad = (exerciseName: string) => {
-    const weight = parseFloat(currentInputs[exerciseName]);
-    if (isNaN(weight)) return;
-    const log: ExerciseLog = {
-      date: new Date().toISOString(),
-      exerciseName,
-      weight
-    };
-    setState(prev => ({ ...prev, exerciseLogs: [...prev.exerciseLogs, log] }));
-  };
-
-  const handleEvolveWorkout = async () => {
-    setIsGeneratingWorkout(true);
-    // Logic to regenerate workout based on logs
-    setIsGeneratingWorkout(false);
-  };
-
-  const togglePomodoro = () => setPomoIsActive(!pomoIsActive);
-  const resetPomodoro = () => {
-    setPomoIsActive(false);
-    setPomoTime(pomoMode === 'focus' ? 25 * 60 : pomoMode === 'short' ? 5 * 60 : 15 * 60);
-  };
-
-  const addAlarm = () => {
-    if (!newAlarmTime) return;
-    const alarm: Alarm = {
-      id: Date.now().toString(),
-      time: newAlarmTime,
-      label: 'Alarm',
-      active: true
-    };
-    setState(prev => ({ ...prev, alarms: [...prev.alarms, alarm] }));
-    setNewAlarmTime('');
-  };
-
-  const toggleAlarm = (id: string) => {
-    setState(prev => ({
-      ...prev,
-      alarms: prev.alarms.map(a => a.id === id ? { ...a, active: !a.active } : a)
-    }));
-  };
-
-  const deleteAlarm = (id: string) => {
-    setState(prev => ({ ...prev, alarms: prev.alarms.filter(a => a.id !== id) }));
-  };
-
-  const toggleStopwatch = () => setSwIsActive(!swIsActive);
-  const resetStopwatch = () => {
-    setSwIsActive(false);
-    setSwTime(0);
-  };
-
-  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    // Placeholder
-  };
-  
-  const handleFaceUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    // Placeholder
-  };
-
-  const deleteProgressEntry = (id: string) => {
-    setState(prev => ({ ...prev, progressLogs: prev.progressLogs.filter(p => p.id !== id) }));
-  };
-
-  const handleRedeem = (reward: Reward) => {
-    if (state.points >= reward.cost) {
-      setState(prev => ({ ...prev, points: prev.points - reward.cost }));
-      triggerPointAnimation(-reward.cost, reward.label);
-    }
-  };
-
-  // Motivation Handlers
-  const handleGenerateMotivation = async (type: 'roast' | 'hype' | 'focus') => {
-    setIsGeneratingMotivation(true);
-    try {
-        const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-        let prompt = "";
-        const context = `Nome: ${state.profile.name || 'Soldado'}, Nível: ${currentLevel}, Strikes: ${state.strikes}`;
+  return (
+    <div className="space-y-2 text-sm md:text-base leading-relaxed">
+      {lines.map((line, i) => {
+        const trimmed = line.trim();
+        if (!trimmed) return <div key={i} className="h-2"></div>;
         
-        switch(type) {
-            case 'roast':
-                prompt = `CONTEXTO: ${context}. AJA COMO: Um sargento brutal e realista. O usuário está precisando de um choque de realidade. Dê um esporro curto e grosso sobre disciplina, fracasso e mediocridade. Português.`;
-                break;
-            case 'hype':
-                prompt = `CONTEXTO: ${context}. AJA COMO: Um treinador de elite motivando para a guerra. O usuário vai treinar agora. Dê energia, fale sobre glória, dor e conquista. Português.`;
-                break;
-            case 'focus':
-                prompt = `CONTEXTO: ${context}. AJA COMO: Um filósofo estoico (Marco Aurélio). O usuário está distraído. Fale sobre a brevidade da vida (Memento Mori) e o foco no essencial. Português.`;
-                break;
+        // Handle Lists
+        if (trimmed.startsWith('- ') || trimmed.startsWith('* ')) {
+          return (
+             <div key={i} className="flex gap-2 ml-1">
+                <span className={`${accentColor.replace('bg-', 'text-')} font-bold`}>•</span>
+                <p className="flex-1">{parseBold(trimmed.replace(/^[-*]\s/, ''))}</p>
+             </div>
+          );
         }
 
-        const response = await ai.models.generateContent({
-            model: 'gemini-3-flash-preview',
-            contents: prompt
-        });
-        setMotivationSpeech(response.text);
-    } catch (e) {
-        console.error(e);
-        alert("Erro ao conectar com o QG Mental.");
-    } finally {
-        setIsGeneratingMotivation(false);
-    }
-  };
+        // Handle Numbered Lists (basic 1. detection)
+        if (/^\d+\./.test(trimmed)) {
+           return (
+             <div key={i} className="flex gap-2 ml-1">
+                <span className={`${accentColor.replace('bg-', 'text-')} font-mono font-bold`}>{trimmed.split('.')[0]}.</span>
+                <p className="flex-1">{parseBold(trimmed.replace(/^\d+\.\s*/, ''))}</p>
+             </div>
+           )
+        }
 
-  const toggleHardcoreMode = () => {
-      setState(prev => ({...prev, hardcoreMode: !prev.hardcoreMode}));
-  };
+        return <p key={i}>{parseBold(line)}</p>;
+      })}
+    </div>
+  );
+};
 
-  // Voice Assistant Handlers
+const LevelUpModal: React.FC<{ level: number, onClose: () => void, accentColor: string }> = ({ level, onClose, accentColor }) => (
+  <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/90 backdrop-blur-md p-4 animate-[fadeIn_0.3s_ease-out]" onClick={onClose}>
+    <div className={`bg-slate-900 border-2 ${accentColor.replace('bg-', 'border-')} p-10 rounded-3xl text-center shadow-[0_0_50px_rgba(0,0,0,0.5)] relative overflow-hidden max-w-sm w-full`} onClick={e => e.stopPropagation()}>
+       <div className={`absolute top-0 left-0 w-full h-2 ${accentColor}`}></div>
+       <div className={`mx-auto w-24 h-24 rounded-full ${accentColor} flex items-center justify-center mb-6 shadow-xl`}>
+         <Trophy size={48} className="text-black" />
+       </div>
+       <h2 className="text-4xl font-black text-white italic mb-2 tracking-tighter">LEVEL UP!</h2>
+       <p className="text-slate-400 mb-6 font-mono">NOVO NÍVEL ALCANÇADO</p>
+       <div className={`text-8xl font-black ${accentColor.replace('bg-', 'text-')} mb-8`}>{level}</div>
+       <button onClick={onClose} className={`w-full ${accentColor} text-black font-bold py-4 rounded-xl hover:brightness-110 transition-all`}>
+         CONTINUAR
+       </button>
+    </div>
+  </div>
+);
+
+const GeneralChatView: React.FC<{ user: UserProfile, accentColor: string }> = ({ user, accentColor }) => {
+  const [messages, setMessages] = useState<{role: string, text: string, id: string}[]>([]);
+  const [input, setInput] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [isRecording, setIsRecording] = useState(false);
+  const [audioState, setAudioState] = useState<{isPlaying: boolean, currentMsgId: string | null}>({ isPlaying: false, currentMsgId: null });
+  
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const audioSourceRef = useRef<AudioBufferSourceNode | null>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages, loading]);
+
   const startRecording = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -561,1488 +185,1667 @@ const App: React.FC = () => {
         }
       };
 
+      mediaRecorder.onstop = async () => {
+        const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+        await handleSendAudio(audioBlob);
+        stream.getTracks().forEach(track => track.stop());
+      };
+
       mediaRecorder.start();
       setIsRecording(true);
-      setVoiceResponse('');
     } catch (err) {
       console.error("Error accessing microphone:", err);
       alert("Erro ao acessar microfone.");
     }
   };
 
-  const stopRecording = async () => {
+  const stopRecording = () => {
     if (mediaRecorderRef.current && isRecording) {
       mediaRecorderRef.current.stop();
       setIsRecording(false);
-      setIsProcessingVoice(true);
-
-      mediaRecorderRef.current.onstop = async () => {
-        const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' }); 
-        await handleVoiceQuery(audioBlob);
-        
-        // Stop all tracks
-        mediaRecorderRef.current?.stream.getTracks().forEach(track => track.stop());
-      };
     }
   };
 
-  const handleVoiceQuery = async (audioBlob: Blob) => {
+  const handleSendAudio = async (audioBlob: Blob) => {
+    setLoading(true);
+    const userMsgId = Date.now().toString();
+    setMessages(prev => [...prev, { role: 'user', text: "🎤 Áudio Enviado", id: userMsgId }]);
+
     try {
       const base64Audio = await blobToBase64(audioBlob);
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+      // Determine mimetype (MediaRecorder usually gives webm, but let's be generic or explicit)
+      const responseText = await geminiService.chatWithCoach({ audioData: base64Audio, mimeType: 'audio/webm' }, user);
       
-      // Prepare Context
-      const contextData = {
-        stats: {
-          level: currentLevel,
-          points: state.points,
-          xp: state.xp,
-          strikes: state.strikes,
-          streak: currentStreak
-        },
-        profile: state.profile,
-        activeTab: activeTab,
-        missionsStatus: {
-          completed: Array.from(completedMissionIds),
-          failed: Array.from(failedMissionIds),
-          totalMissions: state.missions.length
-        },
-        dietGoal: dietGoal,
-        workoutGoal: workoutGoal,
-        activeWorkout: state.workoutPlan ? state.workoutPlan.overview : "Nenhum",
-      };
-
-      const systemPrompt = `
-        Você é o "Oráculo", a IA central do app "Protocolo de Disciplina".
-        Você tem acesso total aos dados do usuário.
-        DADOS ATUAIS: ${JSON.stringify(contextData)}
-        
-        Responda à pergunta do usuário (que está em áudio) de forma curta, direta e com a personalidade definida no perfil (${state.profile.tone}).
-        Se o usuário perguntar onde encontrar algo, diga em qual aba está.
-        Se perguntar sobre status, diga os números exatos.
-        Mantenha a resposta em Português.
-      `;
-
-      const response = await ai.models.generateContent({
-        model: 'gemini-3-flash-preview',
-        contents: [
-          {
-            role: 'user',
-            parts: [
-              { text: systemPrompt },
-              { inlineData: { mimeType: 'audio/webm', data: base64Audio } }
-            ]
-          }
-        ]
-      });
-
-      const textResponse = response.text || "Não consegui entender o comando, soldado.";
-      setVoiceResponse(textResponse);
-      await speakText(textResponse);
+      const responseId = (Date.now() + 1).toString();
+      setMessages(prev => [...prev, { role: 'model', text: responseText, id: responseId }]);
+      
+      // Auto play response for audio interactions
+      handlePlayAudio(responseText, responseId);
 
     } catch (error) {
       console.error(error);
-      setVoiceResponse("Erro de comunicação com o QG.");
+      setMessages(prev => [...prev, { role: 'model', text: "Erro ao processar áudio.", id: Date.now().toString() }]);
     } finally {
-      setIsProcessingVoice(false);
+      setLoading(false);
     }
   };
 
-  const speakText = async (text: string) => {
-    setIsPlayingAudio(true);
-    try {
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-      const response = await ai.models.generateContent({
-        model: "gemini-2.5-flash-preview-tts",
-        contents: [{ parts: [{ text: text }] }],
-        config: {
-          responseModalities: [Modality.AUDIO],
-          speechConfig: {
-            voiceConfig: {
-              prebuiltVoiceConfig: { voiceName: 'Charon' } // 'Charon' has a deep, velvety tone
-            }
-          }
-        }
-      });
+  const handleSendMessage = async () => {
+    if (!input.trim()) return;
 
-      const base64Audio = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
-      if (base64Audio) {
-        await playAudioData(base64Audio);
+    const userMsg = { role: 'user', text: input, id: Date.now().toString() };
+    setMessages(prev => [...prev, userMsg]);
+    setInput('');
+    setLoading(true);
+
+    const responseText = await geminiService.chatWithCoach(input, user);
+    
+    setMessages(prev => [...prev, { role: 'model', text: responseText, id: (Date.now() + 1).toString() }]);
+    setLoading(false);
+  };
+
+  const handlePlayAudio = async (text: string, msgId: string) => {
+    // If playing this message, stop it
+    if (audioState.isPlaying && audioState.currentMsgId === msgId) {
+      if (audioSourceRef.current) {
+        audioSourceRef.current.stop();
+        audioSourceRef.current = null;
       }
+      setAudioState({ isPlaying: false, currentMsgId: null });
+      return;
+    }
+
+    // If playing another message, stop it first
+    if (audioSourceRef.current) {
+      audioSourceRef.current.stop();
+      audioSourceRef.current = null;
+    }
+
+    setAudioState({ isPlaying: true, currentMsgId: msgId });
+
+    try {
+      const base64Audio = await geminiService.generateSpeech(text, user.isHardcore);
+      
+      if (!base64Audio) {
+         setAudioState({ isPlaying: false, currentMsgId: null });
+         return;
+      }
+
+      if (!audioContextRef.current) {
+        audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({sampleRate: 24000});
+      }
+
+      const audioCtx = audioContextRef.current;
+      
+      // Decode PCM
+      const rawBytes = decodeBase64(base64Audio);
+      const audioBuffer = await decodeAudioData(rawBytes, audioCtx, 24000, 1);
+
+      const source = audioCtx.createBufferSource();
+      source.buffer = audioBuffer;
+      source.connect(audioCtx.destination);
+      
+      source.onended = () => {
+        setAudioState({ isPlaying: false, currentMsgId: null });
+      };
+
+      source.start();
+      audioSourceRef.current = source;
+
     } catch (e) {
-      console.error("Error generating speech:", e);
-    } finally {
-      setIsPlayingAudio(false);
+      console.error("Audio Playback Error:", e);
+      setAudioState({ isPlaying: false, currentMsgId: null });
     }
   };
 
-  const triggerPointAnimation = (value: number, label: string) => {
-    setPointAnimation({ value, label });
-    setScoreBump(true);
-    setTimeout(() => {
-      setScoreBump(false);
-      setPointAnimation(null);
-    }, 2000);
-  };
-
-  const formatTime = (seconds: number) => {
-    const mins = Math.floor(seconds / 60);
-    const secs = seconds % 60;
-    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
-  };
-
-  const formatStopwatch = (ms: number) => {
-    const mins = Math.floor(ms / 60000);
-    const secs = Math.floor((ms % 60000) / 1000);
-    const centis = Math.floor((ms % 1000) / 10);
-    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}:${centis.toString().padStart(2, '0')}`;
-  };
-
-  // Render Helpers (Pasted from user content)
-  const renderHeader = () => (
-    <header className="relative md:fixed md:top-0 md:left-0 md:right-0 z-50 bg-slate-950/80 backdrop-blur-md border-b border-slate-800 pb-4 pt-6 px-4 transition-all duration-300">
-      <div className="max-w-5xl mx-auto flex items-center justify-between mb-2">
-        <div>
-          <h1 className="text-xl font-black tracking-tighter text-slate-100 flex items-center gap-2">
-            <Flame className="text-orange-500" fill="currentColor" size={24} />
-            DISCIPLINA
-          </h1>
-          <div className="flex items-center gap-2 mt-1">
-             <div className="text-xs font-bold text-emerald-500 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">
-               NÍVEL {currentLevel}
-             </div>
-             
-             {/* Streak Counter */}
-             <div className="flex items-center gap-1.5 text-xs font-bold text-orange-400 bg-orange-500/10 px-2 py-0.5 rounded border border-orange-500/20">
-               <Flame size={12} fill="currentColor" />
-               <span>{currentStreak} DIAS</span>
-             </div>
-
-             <div className="flex items-center gap-1.5 text-xs font-mono text-slate-400 bg-slate-900 px-2 py-0.5 rounded border border-slate-800">
-                <Clock size={12} className="text-orange-400" />
-                <span className="tabular-nums tracking-wide">{timeLeft}</span>
-             </div>
-          </div>
-        </div>
-        <div className="text-right">
-          <div className={`text-3xl font-black text-emerald-400 font-mono leading-none transition-transform duration-200 ${scoreBump ? 'scale-125 text-emerald-300 drop-shadow-[0_0_8px_rgba(16,185,129,0.5)]' : 'scale-100'}`}>
-            {state.points}
-          </div>
-          <div className="text-xs text-slate-500 font-bold uppercase tracking-wider">Pontos</div>
-        </div>
-      </div>
-
-      {/* Level Progress Bar */}
-      <div className="max-w-5xl mx-auto mb-2">
-        <div className="flex justify-between text-[10px] font-bold text-slate-500 uppercase mb-1">
-          <span>XP {state.xp}</span>
-          <span>Próximo Nível {xpProgress}/{XP_PER_LEVEL}</span>
-        </div>
-        <div className="h-1.5 w-full bg-slate-800 rounded-full overflow-hidden">
-          <div 
-            className="h-full bg-emerald-500 transition-all duration-500 ease-out"
-            style={{ width: `${xpPercent}%` }}
-          />
-        </div>
-      </div>
-      
-      {state.hardcoreMode && (
-        <div className="max-w-5xl mx-auto mb-2 flex items-center gap-2 bg-red-950/30 border border-red-900/50 rounded-lg p-2 px-3">
-          <Skull className="text-red-500 animate-pulse" size={16} />
-          <span className="text-xs font-bold text-red-400 tracking-wider flex-1">MODO HARDCORE ATIVO</span>
-          <div className="flex gap-1">
-            {[1, 2, 3].map(i => (
-              <div key={i} className={`w-2 h-2 rounded-full ${i <= state.strikes ? 'bg-red-500' : 'bg-red-900/40'}`} />
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Floating Point Animation */}
-      {pointAnimation && (
-        <div className="fixed top-24 left-1/2 transform -translate-x-1/2 z-[100] pointer-events-none animate-float-up flex flex-col items-center">
-          <div className="text-4xl font-black text-emerald-400 drop-shadow-[0_0_10px_rgba(16,185,129,0.8)]">
-            +{pointAnimation.value} PTS
-          </div>
-          <div className="text-xs font-bold text-emerald-200/80 bg-emerald-900/40 px-2 py-1 rounded backdrop-blur-sm mt-1 border border-emerald-500/20">
-            {pointAnimation.label}
-          </div>
-        </div>
-      )}
-    </header>
-  );
-
-  const renderProfileAndGoals = () => (
-    <div className="space-y-6 animate-in fade-in slide-in-from-right-8 duration-300">
-      
-      {/* Profile Section */}
-      <Card className="p-6">
-        <div className="flex items-center gap-3 mb-4">
-          <div className="bg-emerald-500/10 p-2 rounded-lg">
-            <User className="text-emerald-500" size={24} />
-          </div>
-          <h2 className="font-bold text-slate-200 text-lg">Janela de Status de Jogador</h2>
-        </div>
+  return (
+    <div className="flex flex-col h-full max-w-4xl mx-auto">
+      <div className="bg-slate-900/80 border border-slate-800 rounded-2xl flex-1 flex flex-col overflow-hidden shadow-2xl relative">
+        <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-slate-700 to-transparent"></div>
         
-        <div className="grid grid-cols-2 gap-4">
-          <div className="col-span-2">
-            <label className="text-xs font-bold text-slate-500 uppercase">Nome / Codinome</label>
-            <input 
-              type="text" 
-              value={state.profile.name}
-              onChange={(e) => handleProfileChange('name', e.target.value)}
-              className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-white mt-1 focus:border-emerald-500 outline-none"
-              placeholder="Digite seu nome"
-            />
-          </div>
-          <div>
-            <label className="text-xs font-bold text-slate-500 uppercase">Idade</label>
-            <input 
-              type="number" 
-              value={state.profile.age}
-              onChange={(e) => handleProfileChange('age', e.target.value)}
-              className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-white mt-1 focus:border-emerald-500 outline-none"
-              placeholder="Anos"
-            />
-          </div>
-          <div>
-            <label className="text-xs font-bold text-slate-500 uppercase">Peso (kg)</label>
-            <input 
-              type="number" 
-              value={state.profile.weight}
-              onChange={(e) => handleProfileChange('weight', e.target.value)}
-              className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-white mt-1 focus:border-emerald-500 outline-none"
-              placeholder="kg"
-            />
-          </div>
-          <div className="col-span-2">
-            <label className="text-xs font-bold text-slate-500 uppercase">Altura (cm)</label>
-            <input 
-              type="number" 
-              value={state.profile.height}
-              onChange={(e) => handleProfileChange('height', e.target.value)}
-              className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-white mt-1 focus:border-emerald-500 outline-none"
-              placeholder="cm"
-            />
-          </div>
-
-          {/* AI Tone Selection */}
-          <div className="col-span-2 mt-4">
-             <label className="text-xs font-bold text-slate-500 uppercase mb-2 block">Personalidade da IA</label>
-             <div className="grid grid-cols-3 gap-2">
-               <button
-                 onClick={() => handleToneChange('brutal')}
-                 className={`flex flex-col items-center justify-center p-3 rounded-lg border-2 transition-all ${
-                   state.profile.tone === 'brutal' || !state.profile.tone
-                     ? 'bg-red-950/30 border-red-500 text-red-400' 
-                     : 'bg-slate-950 border-slate-800 text-slate-500 hover:border-slate-600'
-                 }`}
-               >
-                 <Sword size={20} className="mb-1" />
-                 <span className="text-[10px] font-bold uppercase">Brutal</span>
-               </button>
-               
-               <button
-                 onClick={() => handleToneChange('mentor')}
-                 className={`flex flex-col items-center justify-center p-3 rounded-lg border-2 transition-all ${
-                   state.profile.tone === 'mentor' 
-                     ? 'bg-blue-950/30 border-blue-500 text-blue-400' 
-                     : 'bg-slate-950 border-slate-800 text-slate-500 hover:border-slate-600'
-                 }`}
-               >
-                 <Scroll size={20} className="mb-1" />
-                 <span className="text-[10px] font-bold uppercase">Mentor</span>
-               </button>
-
-               <button
-                 onClick={() => handleToneChange('scientist')}
-                 className={`flex flex-col items-center justify-center p-3 rounded-lg border-2 transition-all ${
-                   state.profile.tone === 'scientist' 
-                     ? 'bg-purple-950/30 border-purple-500 text-purple-400' 
-                     : 'bg-slate-950 border-slate-800 text-slate-500 hover:border-slate-600'
-                 }`}
-               >
-                 <FlaskConical size={20} className="mb-1" />
-                 <span className="text-[10px] font-bold uppercase">Cientista</span>
-               </button>
-             </div>
-          </div>
-        </div>
-      </Card>
-
-      {/* AI Analysis Section */}
-      <Card className="p-6 border-emerald-500/20 relative overflow-hidden">
-        <div className="absolute top-0 right-0 p-4 opacity-10">
-          <BrainCircuit size={100} className="text-emerald-500" />
-        </div>
-        <h2 className="font-bold text-emerald-400 mb-2 flex items-center gap-2">
-          <BrainCircuit size={20} /> IA Estratégica
-        </h2>
-        <p className="text-sm text-slate-400 mb-4">
-          A IA analisará seu perfil e metas para gerar um plano de combate.
-        </p>
-        
-        {state.aiAnalysis && (
-          <div className="bg-slate-950/80 rounded-lg p-4 text-sm text-slate-300 font-mono mb-4 border border-emerald-500/20 whitespace-pre-line leading-relaxed">
-            {state.aiAnalysis}
+        {messages.length === 0 && (
+          <div className="flex-1 flex flex-col items-center justify-center p-8 text-center text-slate-500">
+            <div className={`p-6 rounded-full bg-slate-950 border border-slate-800 mb-6 shadow-xl`}>
+               <Bot size={64} className={accentColor.replace('bg-', 'text-')} />
+            </div>
+            <h2 className="text-2xl font-bold text-white mb-2">QUARTEL GENERAL (QG)</h2>
+            <p className="max-w-md mb-6">
+              {user.isHardcore 
+                ? "Fale, recruta. Sem enrolação. O comando está ouvindo." 
+                : "Olá. Estou analisando seu perfil. Como posso ajudar na sua jornada hoje?"}
+            </p>
+            <div className="grid grid-cols-2 gap-2 text-xs text-slate-600">
+               <span className="bg-slate-900 border border-slate-800 px-3 py-2 rounded-lg">"Como está meu progresso?"</span>
+               <span className="bg-slate-900 border border-slate-800 px-3 py-2 rounded-lg">"O que tem na loja?"</span>
+               <span className="bg-slate-900 border border-slate-800 px-3 py-2 rounded-lg">"Me dê uma dica de dieta"</span>
+               <span className="bg-slate-900 border border-slate-800 px-3 py-2 rounded-lg">"Analise minha última missão"</span>
+            </div>
           </div>
         )}
 
-        <button 
-          onClick={handleAIAnalysis}
-          disabled={isAnalyzing}
-          className="w-full py-3 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-lg transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 shadow-lg shadow-emerald-900/20"
-        >
-          {isAnalyzing ? (
-            <>Analisando Dados Táticos...</>
-          ) : (
-            <>
-              <Zap size={18} fill="currentColor" /> GERAR ANÁLISE DE COMBATE
-            </>
-          )}
-        </button>
-      </Card>
-
-      {/* Goals Section */}
-      <div className="space-y-4">
-        <div className="flex items-center justify-between">
-          <h2 className="text-lg font-bold text-slate-200 flex items-center gap-2">
-            <Dumbbell className="text-orange-500" /> Metas de Longo Prazo
-          </h2>
-        </div>
-
-        <div className="flex gap-2">
-          <input 
-            type="text"
-            value={newGoalName}
-            onChange={(e) => setNewGoalName(e.target.value)}
-            placeholder="Nova meta (ex: Correr Maratona)"
-            className="flex-1 bg-slate-900 border border-slate-700 rounded-lg p-3 text-white focus:border-orange-500 outline-none"
-          />
-          <button 
-            onClick={handleAddGoal}
-            disabled={!newGoalName.trim()}
-            className="bg-orange-600 hover:bg-orange-500 text-white p-3 rounded-lg font-bold disabled:opacity-50 transition-colors"
-          >
-            <Plus size={24} />
-          </button>
-        </div>
-
-        <div className="space-y-2">
-          {state.goals.length === 0 && (
-            <div className="text-center p-8 text-slate-600 border border-dashed border-slate-800 rounded-xl">
-              Nenhuma meta definida. O fracasso é o destino de quem não planeja.
-            </div>
-          )}
-          
-          {state.goals.map(goal => (
-            <Card key={goal.id} className={`p-4 flex items-center justify-between transition-all ${goal.completed ? 'opacity-50 border-emerald-900/30' : 'hover:border-slate-600'}`}>
-              <div className="flex items-center gap-3">
-                <button 
-                  onClick={() => handleCompleteGoal(goal.id)}
-                  disabled={goal.completed}
-                  className={`p-2 rounded-full border-2 transition-all ${
-                    goal.completed 
-                      ? 'bg-emerald-500 border-emerald-500 text-white' 
-                      : 'border-slate-600 text-transparent hover:border-emerald-500'
-                  }`}
-                  title="Concluir Meta"
-                >
-                  <CheckCircle2 size={16} fill={goal.completed ? "currentColor" : "none"} />
-                </button>
-                <div>
-                  <h3 className={`font-bold ${goal.completed ? 'text-emerald-500 line-through' : 'text-slate-200'}`}>
-                    {goal.label}
-                  </h3>
-                  <div className="text-[10px] text-slate-500 font-bold uppercase mt-1">
-                    Recompensa: {goal.rewardPoints} PTS + 100 XP
-                  </div>
+        <div className="flex-1 overflow-y-auto p-6 space-y-6">
+          {messages.map((msg) => (
+             <div key={msg.id} className={`flex gap-4 ${msg.role === 'user' ? 'flex-row-reverse' : 'flex-row'}`}>
+                <div className={`w-10 h-10 rounded-full flex items-center justify-center shrink-0 border border-slate-700 ${msg.role === 'user' ? 'bg-slate-800' : 'bg-slate-950'}`}>
+                    {msg.role === 'user' ? <UserIcon size={20} className="text-slate-400" /> : <Bot size={20} className={accentColor.replace('bg-', 'text-')} />}
                 </div>
-              </div>
-              
-              <button 
-                onClick={() => handleDeleteGoal(goal.id)}
-                className="text-slate-600 hover:text-red-500 transition-colors p-2"
-                title="Remover Meta"
-              >
-                <Trash2 size={16} />
-              </button>
-            </Card>
-          ))}
-        </div>
-      </div>
-    </div>
-  );
 
-  const renderVoiceModal = () => (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/80 backdrop-blur-sm p-4 animate-in fade-in duration-200">
-      <div className="bg-slate-900 border border-emerald-500/30 rounded-2xl w-full max-w-md p-6 relative shadow-2xl shadow-emerald-900/20">
-        <button 
-          onClick={() => setShowVoiceModal(false)}
-          className="absolute top-4 right-4 text-slate-500 hover:text-white"
-        >
-          <X size={24} />
-        </button>
-
-        <div className="flex flex-col items-center gap-6">
-          <div className="text-center">
-            <h3 className="text-xl font-bold text-white flex items-center justify-center gap-2">
-              <Bot className="text-emerald-500" /> ORÁCULO
-            </h3>
-            <p className="text-xs text-slate-400 mt-1">Comando de Voz Integrado</p>
-          </div>
-
-          <div className="relative">
-            {isRecording && (
-              <div className="absolute inset-0 bg-red-500 rounded-full animate-ping opacity-20"></div>
-            )}
-            <button
-              onClick={isRecording ? stopRecording : startRecording}
-              disabled={isProcessingVoice || isPlayingAudio}
-              className={`w-20 h-20 rounded-full flex items-center justify-center transition-all ${
-                isRecording 
-                  ? 'bg-red-600 text-white scale-110 shadow-lg shadow-red-500/50' 
-                  : isProcessingVoice || isPlayingAudio
-                    ? 'bg-slate-700 text-slate-400 cursor-wait'
-                    : 'bg-emerald-600 text-white hover:bg-emerald-500 hover:scale-105 shadow-lg shadow-emerald-500/30'
-              }`}
-            >
-              {isProcessingVoice ? (
-                <RefreshCw className="animate-spin" size={32} />
-              ) : isPlayingAudio ? (
-                <Volume2 className="animate-pulse" size={32} />
-              ) : isRecording ? (
-                <Square fill="currentColor" size={32} />
-              ) : (
-                <Mic size={32} />
-              )}
-            </button>
-          </div>
-
-          <div className="text-center min-h-[60px]">
-            {isRecording && <p className="text-red-400 font-mono text-sm animate-pulse">GRAVANDO COMANDO...</p>}
-            {isProcessingVoice && <p className="text-emerald-400 font-mono text-sm animate-pulse">PROCESSANDO DADOS TÁTICOS...</p>}
-            {isPlayingAudio && <p className="text-emerald-400 font-mono text-sm animate-pulse">TRANSMITINDO ÁUDIO...</p>}
-            
-            {!isRecording && !isProcessingVoice && !isPlayingAudio && !voiceResponse && (
-              <p className="text-slate-500 text-sm">Toque para falar. Pergunte sobre suas missões, dieta ou status.</p>
-            )}
-            {voiceResponse && (
-              <div className="bg-slate-950/50 p-4 rounded-xl border border-slate-800 text-left">
-                <p className="text-slate-200 text-sm leading-relaxed">{voiceResponse}</p>
-                <div className="flex justify-end mt-2">
-                  <button onClick={() => speakText(voiceResponse)} disabled={isPlayingAudio} className="text-emerald-500 p-1 hover:text-emerald-400 disabled:opacity-50">
-                    <Volume2 size={16} />
-                  </button>
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-
-  return (
-    <div className={`min-h-screen bg-slate-950 text-slate-200 font-sans selection:bg-emerald-500/30 ${state.hardcoreMode ? 'theme-hardcore' : ''} pb-24`}>
-       {renderHeader()}
-       
-       <div className="max-w-5xl mx-auto p-4 md:pt-48 flex flex-col md:flex-row gap-6">
-         {/* Navigation Tabs - Fixed Bottom Bar on Mobile, Sticky Sidebar on Desktop */}
-        <nav className="
-          flex md:flex-col 
-          bg-slate-900/90 p-2 rounded-2xl backdrop-blur-xl 
-          fixed bottom-6 left-4 right-4 z-50 
-          md:sticky md:top-48 md:bottom-auto md:left-auto md:right-auto
-          shadow-2xl border border-slate-800 
-          overflow-x-auto md:overflow-visible
-          md:w-64 md:h-fit md:shrink-0
-          justify-between md:justify-start
-        ">
-          <TabButton active={activeTab === 'missions'} onClick={() => setActiveTab('missions')} icon={Target} label="Missões" />
-          <TabButton active={activeTab === 'workout'} onClick={() => setActiveTab('workout')} icon={Dumbbell} label="Treino" />
-          <TabButton active={activeTab === 'diet'} onClick={() => setActiveTab('diet')} icon={Utensils} label="Dieta" />
-          <TabButton active={activeTab === 'tools'} onClick={() => setActiveTab('tools')} icon={Timer} label="Ferramentas" />
-          <TabButton active={activeTab === 'progress'} onClick={() => setActiveTab('progress')} icon={TrendingUp} label="Progresso" />
-          <TabButton active={activeTab === 'rewards'} onClick={() => setActiveTab('rewards')} icon={ShoppingBag} label="Loja" />
-          <TabButton active={activeTab === 'profile'} onClick={() => setActiveTab('profile')} icon={UserSquare2} label="Perfil" />
-          <TabButton active={activeTab === 'motivation'} onClick={() => setActiveTab('motivation')} icon={Zap} label="Motivação" />
-        </nav>
-
-        {/* Floating Voice Button */}
-        <button
-          onClick={() => setShowVoiceModal(true)}
-          className="fixed bottom-24 right-4 md:bottom-8 md:right-8 z-40 bg-emerald-600 hover:bg-emerald-500 text-white p-4 rounded-full shadow-2xl shadow-emerald-500/30 transition-transform hover:scale-110 border-2 border-emerald-400/50"
-          title="Abrir Oráculo"
-        >
-          <Mic size={24} />
-        </button>
-
-        {showVoiceModal && renderVoiceModal()}
-
-        {/* Main Content - Added bottom padding for mobile nav */}
-        <main className="flex-1 min-w-0 space-y-6 min-h-[50vh] pb-24 md:pb-0">
-          {activeTab === 'missions' && (
-             <div className="space-y-4 animate-in fade-in slide-in-from-bottom-4 duration-300">
-                <button 
-                  onClick={() => setShowAddModal(true)}
-                  className="w-full py-4 border-2 border-dashed border-slate-800 rounded-xl text-slate-500 font-bold hover:border-emerald-500 hover:text-emerald-500 transition-all flex items-center justify-center gap-2 group"
-                >
-                  <Plus className="group-hover:scale-110 transition-transform" /> ADICIONAR MISSÃO
-                </button>
-
-                {state.missions.map(mission => {
-                  const isCompleted = completedMissionIds.has(mission.id);
-                  const isFailed = failedMissionIds.has(mission.id);
-                  
-                  return (
-                    <Card key={mission.id} className={`transition-all duration-300 ${isCompleted ? 'border-emerald-500/30 bg-emerald-950/10' : isFailed ? 'border-red-500/30 bg-red-950/10 opacity-60' : 'hover:border-slate-600'}`}>
-                      <div className="p-4 flex items-center justify-between">
-                        <div className="flex items-center gap-4">
-                          <div className={`p-3 rounded-full ${isCompleted ? 'bg-emerald-500 text-white shadow-lg shadow-emerald-500/20' : isFailed ? 'bg-red-500 text-white' : 'bg-slate-800 text-slate-500'}`}>
-                            {isCompleted ? <CheckCircle2 size={24} /> : isFailed ? <XCircle size={24} /> : <Target size={24} />}
-                          </div>
-                          <div>
-                            <h3 className={`font-bold text-lg ${isCompleted ? 'text-emerald-400 line-through' : isFailed ? 'text-red-400 line-through' : 'text-slate-200'}`}>
-                              {mission.label}
-                            </h3>
-                            <div className="flex items-center gap-2 mt-1">
-                              <span className={`text-xs font-bold px-2 py-0.5 rounded ${isCompleted ? 'bg-emerald-500/20 text-emerald-400' : 'bg-slate-800 text-slate-400'}`}>
-                                {mission.points} PTS
-                              </span>
-                              {mission.isCustom && (
-                                <button onClick={() => handleDeleteMission(mission.id)} className="text-slate-600 hover:text-red-400 p-1">
-                                  <Trash2 size={12} />
-                                </button>
-                              )}
-                            </div>
-                          </div>
-                        </div>
-
-                        {!isCompleted && !isFailed && (
-                          <div className="flex items-center gap-2">
-                            <button 
-                              onClick={() => handleFail(mission)}
-                              className="p-3 rounded-lg bg-red-950/30 text-red-700 hover:bg-red-500 hover:text-white transition-all border border-transparent hover:border-red-400"
-                              title="Falhar Missão"
-                            >
-                              <XCircle size={20} />
-                            </button>
-                            <button 
-                              onClick={() => handleComplete(mission)}
-                              className="p-3 rounded-lg bg-emerald-600 text-white hover:bg-emerald-500 transition-all shadow-lg shadow-emerald-900/20 active:scale-95 font-bold"
-                              title="Completar Missão"
-                            >
-                              CONCLUIR
-                            </button>
-                          </div>
-                        )}
+                <div className={`max-w-[85%] group`}>
+                    <div className={`p-4 rounded-2xl shadow-sm ${msg.role === 'user' ? 'bg-slate-800 text-white rounded-tr-none' : 'bg-slate-950 border border-slate-800 text-slate-300 rounded-tl-none'}`}>
+                        <MarkdownRenderer content={msg.text} accentColor={accentColor} />
+                    </div>
+                    {msg.role === 'model' && (
+                      <div className="mt-2 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                         <button 
+                            onClick={() => handlePlayAudio(msg.text, msg.id)}
+                            className={`text-xs flex items-center gap-1 px-2 py-1 rounded bg-slate-900 border border-slate-800 hover:border-slate-600 transition-colors ${audioState.currentMsgId === msg.id && audioState.isPlaying ? 'text-emerald-400' : 'text-slate-500'}`}
+                         >
+                            {audioState.currentMsgId === msg.id && audioState.isPlaying ? <StopCircle size={14} /> : <Volume2 size={14} />}
+                            {audioState.currentMsgId === msg.id && audioState.isPlaying ? "PARAR VOZ" : "OUVIR"}
+                         </button>
                       </div>
-                    </Card>
-                  );
-                })}
+                    )}
+                </div>
+             </div>
+          ))}
+          {loading && (
+             <div className="flex gap-4">
+                <div className="w-10 h-10 rounded-full bg-slate-950 border border-slate-800 flex items-center justify-center shrink-0">
+                  <Bot size={20} className={accentColor.replace('bg-', 'text-')} />
+                </div>
+                <div className="bg-slate-950 border border-slate-800 p-4 rounded-2xl rounded-tl-none flex items-center gap-2">
+                  <div className="w-2 h-2 bg-slate-600 rounded-full animate-bounce"></div>
+                  <div className="w-2 h-2 bg-slate-600 rounded-full animate-bounce delay-75"></div>
+                  <div className="w-2 h-2 bg-slate-600 rounded-full animate-bounce delay-150"></div>
+                </div>
              </div>
           )}
+          <div ref={messagesEndRef} />
+        </div>
 
-          {activeTab === 'diet' && (
-            <div className="space-y-6 animate-in fade-in slide-in-from-right-8 duration-300">
-              <Card className="p-6">
-                <div className="flex items-center gap-3 mb-6">
-                  <div className="bg-emerald-500/10 p-3 rounded-xl">
-                    <ChefHat className="text-emerald-500" size={32} />
+        <div className="p-4 bg-slate-950 border-t border-slate-900 flex gap-2 items-center">
+           <button 
+              onMouseDown={startRecording}
+              onMouseUp={stopRecording}
+              onTouchStart={startRecording}
+              onTouchEnd={stopRecording}
+              disabled={loading}
+              className={`p-3 rounded-lg transition-all ${isRecording ? 'bg-red-500 text-white animate-pulse shadow-[0_0_15px_rgba(239,68,68,0.5)]' : 'bg-slate-800 text-slate-400 hover:text-white hover:bg-slate-700'}`}
+              title="Segure para falar"
+           >
+             <Mic size={20} />
+           </button>
+           
+           <input 
+             value={input}
+             onChange={e => setInput(e.target.value)}
+             onKeyDown={e => e.key === 'Enter' && handleSendMessage()}
+             placeholder={isRecording ? "Gravando..." : "Digite ou segure o microfone..."}
+             disabled={isRecording}
+             className="flex-1 bg-slate-900 border border-slate-800 rounded-lg p-3 text-white outline-none focus:border-slate-600 placeholder:text-slate-600 transition-colors"
+           />
+           <button 
+             onClick={handleSendMessage}
+             disabled={loading || isRecording}
+             className={`${accentColor} p-3 rounded-lg text-black hover:brightness-110 disabled:opacity-50 disabled:cursor-not-allowed transition-all`}
+           >
+             <Send size={20} />
+           </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const AuthScreen: React.FC<{ onLogin: () => void }> = ({ onLogin }) => {
+  const [isRegister, setIsRegister] = useState(false);
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [name, setName] = useState('');
+  const [birthDate, setBirthDate] = useState('');
+  const [error, setError] = useState('');
+
+  const handleAuth = (isGoogle = false) => {
+    setError('');
+    try {
+      if (isGoogle) {
+        // Simulate Google Auth
+        try {
+          db.login('google_user@disciplina.ai', undefined, true);
+        } catch {
+          // If mock google user doesn't exist, register them
+          db.register('google_user@disciplina.ai', 'Google User', undefined, undefined, 'google');
+        }
+        onLogin();
+        return;
+      }
+
+      if (isRegister) {
+        if (!email || !name || !password || !birthDate) throw new Error("Preencha todos os campos.");
+        
+        // Simple age check
+        const age = new Date().getFullYear() - new Date(birthDate).getFullYear();
+        if (age < 13) throw new Error("Idade mínima de 13 anos requerida.");
+
+        db.register(email, name, password, birthDate, 'email');
+        onLogin();
+      } else {
+        if (!email || !password) throw new Error("Preencha todos os campos.");
+        db.login(email, password);
+        onLogin();
+      }
+    } catch (e: any) {
+      setError(e.message);
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-[#050511] flex items-center justify-center p-4">
+      <div className="bg-slate-900/50 p-8 rounded-2xl border border-slate-800 w-full max-w-md backdrop-blur-xl relative overflow-hidden">
+        {/* Decorative background element */}
+        <div className="absolute top-0 left-0 w-full h-1 bg-emerald-500"></div>
+        
+        <div className="flex justify-center mb-6">
+          <div className="bg-emerald-500 p-3 rounded-full shadow-[0_0_20px_rgba(16,185,129,0.3)]">
+            <BrainCircuit size={32} className="text-black" />
+          </div>
+        </div>
+        <h1 className="text-3xl font-bold text-white text-center mb-2">DISCIPLINA</h1>
+        <p className="text-slate-400 text-center mb-8">{isRegister ? "Comece sua jornada." : "Retorne ao foco."}</p>
+        
+        {error && <div className="bg-red-900/20 border border-red-900 text-red-400 p-3 rounded-lg mb-4 text-sm text-center">{error}</div>}
+
+        <div className="space-y-4">
+          {isRegister && (
+            <>
+              <div>
+                <label className="text-xs font-bold text-slate-500 ml-1">CODINOME</label>
+                <input 
+                  value={name}
+                  onChange={e => setName(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-lg p-3 text-white focus:border-emerald-500 outline-none transition-colors"
+                  placeholder="Ex: Ronin"
+                />
+              </div>
+              <div>
+                 <label className="text-xs font-bold text-slate-500 ml-1">DATA DE NASCIMENTO</label>
+                 <input 
+                   type="date"
+                   value={birthDate}
+                   onChange={e => setBirthDate(e.target.value)}
+                   className="w-full bg-slate-950 border border-slate-800 rounded-lg p-3 text-white focus:border-emerald-500 outline-none transition-colors"
+                 />
+              </div>
+            </>
+          )}
+          
+          <div>
+            <label className="text-xs font-bold text-slate-500 ml-1">EMAIL</label>
+            <input 
+              value={email}
+              type="email"
+              onChange={e => setEmail(e.target.value)}
+              className="w-full bg-slate-950 border border-slate-800 rounded-lg p-3 text-white focus:border-emerald-500 outline-none transition-colors"
+              placeholder="seu@email.com"
+            />
+          </div>
+          <div>
+            <label className="text-xs font-bold text-slate-500 ml-1">SENHA</label>
+            <input 
+              value={password}
+              type="password"
+              onChange={e => setPassword(e.target.value)}
+              className="w-full bg-slate-950 border border-slate-800 rounded-lg p-3 text-white focus:border-emerald-500 outline-none transition-colors"
+              placeholder="••••••••"
+            />
+          </div>
+
+          <button 
+            onClick={() => handleAuth(false)}
+            className="w-full bg-emerald-500 hover:bg-emerald-400 text-black font-bold py-3 rounded-lg transition-all transform hover:scale-[1.02]"
+          >
+            {isRegister ? 'INICIAR PROTOCOLO' : 'ACESSAR SISTEMA'}
+          </button>
+
+          <div className="flex items-center gap-4 my-2">
+            <div className="h-px bg-slate-800 flex-1"></div>
+            <span className="text-xs text-slate-600">OU</span>
+            <div className="h-px bg-slate-800 flex-1"></div>
+          </div>
+
+          <button 
+            onClick={() => handleAuth(true)}
+            className="w-full bg-slate-800 hover:bg-slate-700 text-white font-bold py-3 rounded-lg transition-all flex items-center justify-center gap-3 border border-slate-700"
+          >
+            <Chrome size={20} /> Entrar com Google
+          </button>
+
+          <div className="text-center mt-6">
+            <button onClick={() => setIsRegister(!isRegister)} className="text-sm text-slate-400 hover:text-white transition-colors">
+              {isRegister ? "Já tem uma conta? Entrar" : "Não tem conta? Criar Protocolo"}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+interface MissionsViewProps {
+  user: UserProfile;
+  onUpdateUser: (u: Partial<UserProfile>) => void;
+  onShowToast: (msg: string) => void;
+  accentColor: string;
+}
+
+const MissionsView: React.FC<MissionsViewProps> = ({ user, onUpdateUser, onShowToast, accentColor }) => {
+  const [missions, setMissions] = useState<Mission[]>([]);
+  const [isAdding, setIsAdding] = useState(false);
+  const [newMissionTitle, setNewMissionTitle] = useState('');
+  const [newMissionXp, setNewMissionXp] = useState(50);
+
+  useEffect(() => {
+    setMissions(db.getMissions(user.id));
+  }, [user.id]);
+
+  const toggleMission = (id: string) => {
+    const updated = missions.map(m => {
+      if (m.id === id && !m.completed) {
+        const xpEarned = m.xp;
+        const coinsEarned = Math.floor(m.xp / 5); // 1 Coin for every 5 XP
+        onUpdateUser({ 
+            xp: user.xp + xpEarned,
+            coins: (user.coins || 0) + coinsEarned 
+        });
+        db.logActivity('mission_complete', xpEarned, `Mission: ${m.title}`);
+        onShowToast(`+${xpEarned} XP • +${coinsEarned} Coins`);
+        return { ...m, completed: true };
+      }
+      return m;
+    });
+    setMissions(updated);
+    db.saveMissions(user.id, updated);
+  };
+
+  const handleShare = async (mission: Mission) => {
+    const text = `Acabei de completar a missão "${mission.title}" no Disciplina AI! Ganhei ${mission.xp} XP. O conforto é o inimigo. 🚀`;
+    if (navigator.share) {
+      try {
+        await navigator.share({
+          title: 'Conquista Desbloqueada - Disciplina AI',
+          text: text,
+        });
+      } catch (err) {
+        console.error('Error sharing:', err);
+      }
+    } else {
+      navigator.clipboard.writeText(text);
+      onShowToast("Copiado para o clipboard!");
+    }
+  };
+
+  const handleAddMission = () => {
+    if (!newMissionTitle.trim()) return;
+    
+    const newMission: Mission = {
+        id: Date.now().toString(),
+        title: newMissionTitle,
+        xp: newMissionXp,
+        completed: false,
+        type: 'one-time'
+    };
+
+    const updated = [...missions, newMission];
+    setMissions(updated);
+    db.saveMissions(user.id, updated);
+    setIsAdding(false);
+    setNewMissionTitle('');
+    setNewMissionXp(50);
+  };
+
+  const handleRemoveMission = (id: string) => {
+    const updated = missions.filter(m => m.id !== id);
+    setMissions(updated);
+    db.saveMissions(user.id, updated);
+  };
+
+  return (
+    <div className="space-y-4 max-w-3xl mx-auto">
+       <div className="flex justify-between items-center mb-6">
+         <h2 className="text-2xl font-bold text-white">Missões do Dia</h2>
+         {!isAdding && (
+            <button 
+                onClick={() => setIsAdding(true)}
+                className="text-xs border border-slate-700 px-3 py-1 rounded text-slate-400 hover:text-white flex items-center gap-1 transition-colors"
+            >
+                <Plus size={14} /> ADICIONAR MISSÃO
+            </button>
+         )}
+       </div>
+
+       {isAdding && (
+         <div className="bg-slate-900/50 border border-slate-700 p-4 rounded-xl mb-4 animate-in fade-in slide-in-from-top-2">
+            <div className="flex gap-4 mb-4">
+                <input 
+                    autoFocus
+                    value={newMissionTitle}
+                    onChange={e => setNewMissionTitle(e.target.value)}
+                    placeholder="Título da missão..."
+                    className="flex-1 bg-slate-950 border border-slate-800 rounded-lg p-3 text-white focus:border-slate-600 outline-none transition-colors"
+                    onKeyDown={e => e.key === 'Enter' && handleAddMission()}
+                />
+                <select 
+                    value={newMissionXp}
+                    onChange={e => setNewMissionXp(Number(e.target.value))}
+                    className="bg-slate-950 border border-slate-800 rounded-lg p-3 text-white outline-none w-28"
+                >
+                    <option value={20}>20 XP</option>
+                    <option value={50}>50 XP</option>
+                    <option value={100}>100 XP</option>
+                </select>
+            </div>
+            <div className="flex justify-end gap-2">
+                <button 
+                    onClick={() => setIsAdding(false)}
+                    className="px-4 py-2 rounded-lg text-slate-400 hover:bg-slate-800 hover:text-white transition-all text-sm font-bold"
+                >
+                    CANCELAR
+                </button>
+                <button 
+                    onClick={handleAddMission}
+                    className={`px-4 py-2 rounded-lg text-black font-bold ${accentColor} hover:brightness-110 transition-all text-sm`}
+                >
+                    SALVAR
+                </button>
+            </div>
+         </div>
+       )}
+
+       {missions.map(m => (
+         <div key={m.id} className="bg-slate-900/80 border border-slate-800 p-4 rounded-xl flex items-center justify-between group hover:border-slate-700 transition-all">
+            <div className="flex items-center gap-4">
+              <div className={`p-3 rounded-full ${m.completed ? 'bg-emerald-900/20 text-emerald-500' : 'bg-slate-800 text-slate-600'}`}>
+                <Target size={24} />
+              </div>
+              <div>
+                <h3 className={`font-bold text-lg ${m.completed ? 'text-slate-500 line-through' : 'text-white'}`}>{m.title}</h3>
+                <span className="text-xs font-bold bg-slate-800 px-2 py-0.5 rounded text-slate-400">{m.xp} XP</span>
+              </div>
+            </div>
+            
+            <div className="flex gap-2 items-center">
+              <button 
+                  onClick={() => handleRemoveMission(m.id)}
+                  className="p-3 rounded-lg text-slate-600 hover:text-red-500 hover:bg-red-900/20 transition-all opacity-0 group-hover:opacity-100"
+                  title="Remover Missão"
+              >
+                  <Trash2 size={20} />
+              </button>
+
+              {m.completed && (
+                <button 
+                  onClick={() => handleShare(m)}
+                  className="p-3 rounded-lg bg-slate-800 text-slate-400 hover:text-white hover:bg-slate-700 transition-all border border-slate-700"
+                  title="Compartilhar Conquista"
+                >
+                  <Share2 size={20} />
+                </button>
+              )}
+              <button 
+                onClick={() => toggleMission(m.id)}
+                disabled={m.completed}
+                className={`px-6 py-2 rounded-lg font-bold transition-all ${
+                  m.completed 
+                  ? 'bg-emerald-900/20 text-emerald-500 border border-emerald-900 cursor-default' 
+                  : `${accentColor} hover:brightness-110 text-black shadow-[0_0_15px_rgba(16,185,129,0.4)]`
+                }`}
+              >
+                {m.completed ? 'CONCLUÍDO' : 'CONCLUIR'}
+              </button>
+            </div>
+         </div>
+       ))}
+    </div>
+  );
+};
+
+const ShopView: React.FC<{ user: UserProfile, onUpdateUser: (u: Partial<UserProfile>) => void, accentColor: string, onShowToast: (msg: string) => void }> = ({ user, onUpdateUser, accentColor, onShowToast }) => {
+  const handleBuy = (item: ShopItemDef) => {
+    if ((user.coins || 0) < item.price) {
+      onShowToast("Saldo insuficiente!");
+      return;
+    }
+
+    // Check ownership for themes, safe check inventory
+    const inventory = user.inventory || [];
+    if (item.type === 'theme' && inventory.includes(`theme_${item.value}`)) {
+      onShowToast("Você já possui este item!");
+      return;
+    }
+
+    const newCoins = (user.coins || 0) - item.price;
+    const newItemId = item.type === 'theme' ? `theme_${item.value}` : item.id;
+    const newInventory = [...inventory, newItemId];
+
+    onUpdateUser({ coins: newCoins, inventory: newInventory });
+    onShowToast(`Compra realizada: ${item.name}`);
+  };
+
+  const isOwned = (item: ShopItemDef) => {
+    const inventory = user.inventory || [];
+    if (item.type === 'theme') return inventory.includes(`theme_${item.value}`) || item.value === 'emerald' || (user.isHardcore && item.value === 'rose');
+    return false; // Consumables can be bought multiple times (logic simplification for now)
+  };
+
+  return (
+    <div className="max-w-5xl mx-auto h-full flex flex-col">
+       <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-6 mb-6 flex justify-between items-center">
+          <div className="flex items-center gap-4">
+             <div className="p-4 bg-yellow-900/20 rounded-xl text-yellow-500 border border-yellow-900/50">
+               <ShoppingCart size={32} />
+             </div>
+             <div>
+               <h2 className="text-3xl font-bold text-white tracking-tight">Arsenal & Suprimentos</h2>
+               <p className="text-slate-400">Invista suas conquistas em melhorias.</p>
+             </div>
+          </div>
+          <div className="flex flex-col items-end">
+             <span className="text-xs text-slate-500 font-bold uppercase tracking-wider">Saldo Atual</span>
+             <div className="text-4xl font-mono text-yellow-500 font-bold flex items-center gap-2">
+                <div className="w-6 h-6 rounded-full border-2 border-yellow-600 bg-yellow-500/20"></div>
+                {user.coins || 0}
+             </div>
+          </div>
+       </div>
+
+       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 overflow-y-auto pb-4">
+          {SHOP_ITEMS.map(item => {
+             const owned = isOwned(item);
+             return (
+               <div key={item.id} className="bg-slate-950 border border-slate-800 rounded-2xl p-6 flex flex-col relative group overflow-hidden transition-all hover:border-slate-600">
+                  <div className={`absolute top-0 left-0 w-full h-1 transition-all group-hover:bg-yellow-500/50 ${owned ? 'bg-emerald-500' : 'bg-slate-800'}`}></div>
+                  
+                  <div className="flex justify-between items-start mb-4">
+                     <div className={`p-3 rounded-lg ${owned ? 'bg-emerald-900/20 text-emerald-500' : 'bg-slate-900 text-slate-400'}`}>
+                        <item.icon size={24} />
+                     </div>
+                     {owned ? (
+                        <span className="bg-emerald-900/20 text-emerald-500 text-xs font-bold px-2 py-1 rounded border border-emerald-900/30">ADQUIRIDO</span>
+                     ) : (
+                        <span className="bg-yellow-900/20 text-yellow-500 text-xs font-bold px-2 py-1 rounded border border-yellow-900/30 flex items-center gap-1">
+                           <div className="w-2 h-2 rounded-full bg-yellow-500"></div>
+                           {item.price}
+                        </span>
+                     )}
+                  </div>
+
+                  <h3 className="text-xl font-bold text-white mb-2">{item.name}</h3>
+                  <p className="text-slate-400 text-sm mb-6 flex-1 leading-relaxed">{item.description}</p>
+
+                  <button 
+                    onClick={() => handleBuy(item)}
+                    disabled={owned || (user.coins || 0) < item.price}
+                    className={`w-full py-3 rounded-xl font-bold text-sm transition-all flex items-center justify-center gap-2
+                      ${owned 
+                        ? 'bg-slate-900 text-slate-500 cursor-default' 
+                        : (user.coins || 0) >= item.price 
+                          ? `${accentColor} text-black hover:brightness-110 shadow-lg` 
+                          : 'bg-slate-900 text-slate-600 cursor-not-allowed border border-slate-800'
+                      }
+                    `}
+                  >
+                    {owned ? (
+                       <> <CheckCircle2 size={16} /> NO INVENTÁRIO </>
+                    ) : (
+                       <> <Wallet size={16} /> COMPRAR </>
+                    )}
+                  </button>
+               </div>
+             );
+          })}
+       </div>
+    </div>
+  );
+};
+
+const MartialArtsView: React.FC<{ accentColor: string, user: UserProfile, onShowToast: (msg: string) => void }> = ({ accentColor, user, onShowToast }) => {
+  const [style, setStyle] = useState('Boxe');
+  const [level, setLevel] = useState('Iniciante');
+  const [duration, setDuration] = useState('30');
+  const [equipment, setEquipment] = useState('Sombra (Sem equipamento)');
+  const [focus, setFocus] = useState('Técnica Pura');
+  const [plan, setPlan] = useState<MartialArtsPlan | null>(null);
+  const [loading, setLoading] = useState(false);
+  
+  const [chatMode, setChatMode] = useState(false);
+  const [chatInput, setChatInput] = useState('');
+  const [chatHistory, setChatHistory] = useState<{role: string, text: string}[]>([]);
+  const chatEndRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [chatHistory]);
+
+  const handleGenerate = async () => {
+    setLoading(true);
+    const result = await geminiService.generateMartialArtsPlan(style, level, duration, equipment, focus);
+    if (result) {
+      setPlan(result);
+      db.logActivity('martial_arts', 25, `Treino de ${style} Gerado`);
+      onShowToast("+25 XP");
+    } else {
+      onShowToast("Erro ao gerar treino.");
+    }
+    setLoading(false);
+  };
+
+  const handleChat = async () => {
+    if (!chatInput.trim()) return;
+    const userMsg = { role: 'user', text: chatInput };
+    setChatHistory(prev => [...prev, userMsg as any]);
+    setChatInput('');
+    setLoading(true);
+
+    // Context specific for Martial Arts Sensei
+    const contextInput = `[CONTEXTO: Mestre de Artes Marciais no Dojo. Estilo do usuário: ${style}] ${chatInput}`;
+    const response = await geminiService.chatWithCoach(contextInput, user);
+    
+    setChatHistory(prev => [...prev, { role: 'model', text: response }]);
+    setLoading(false);
+  };
+
+  return (
+    <div className="h-full flex flex-col max-w-4xl mx-auto">
+      <div className="flex bg-slate-900 p-1 rounded-lg self-center border border-slate-800 mb-6">
+        <button onClick={() => setChatMode(false)} className={`px-6 py-2 rounded-md font-bold transition-all ${!chatMode ? 'bg-slate-800 text-white' : 'text-slate-500'}`}>TREINO DOJO</button>
+        <button onClick={() => setChatMode(true)} className={`px-6 py-2 rounded-md font-bold transition-all ${chatMode ? 'bg-slate-800 text-white' : 'text-slate-500'}`}>FALAR COM SENSEI</button>
+      </div>
+
+      {!chatMode ? (
+        <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-6 w-full animate-in fade-in slide-in-from-bottom-4">
+           {!plan ? (
+             <div className="space-y-6">
+               <div className="flex items-center gap-4 mb-4">
+                  <div className={`p-3 rounded-lg ${accentColor} text-black`}>
+                    <Swords size={24} />
                   </div>
                   <div>
-                    <h2 className="text-xl font-bold text-white">Chef Inteligente</h2>
-                    <p className="text-xs text-slate-400">Receitas baratas com o que você tem em casa.</p>
+                    <h2 className="text-xl font-bold text-white">Gerador de Combate</h2>
+                    <p className="text-slate-400 text-sm">Configure seu treino tático de luta.</p>
                   </div>
+               </div>
+
+               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                     <label className="text-xs text-slate-500 font-bold block mb-2">ESTILO DE LUTA</label>
+                     <select value={style} onChange={e => setStyle(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-lg p-3 text-white outline-none focus:border-slate-600 transition-colors">
+                        <option>Boxe</option>
+                        <option>Muay Thai</option>
+                        <option>Kickboxing</option>
+                        <option>Karate</option>
+                        <option>MMA (Striking)</option>
+                        <option>Jiu Jitsu (Solo Drills)</option>
+                        <option>Taekwondo</option>
+                     </select>
+                  </div>
+                  <div>
+                     <label className="text-xs text-slate-500 font-bold block mb-2">NÍVEL</label>
+                     <select value={level} onChange={e => setLevel(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-lg p-3 text-white outline-none focus:border-slate-600 transition-colors">
+                        <option>Iniciante (Faixa Branca)</option>
+                        <option>Intermediário</option>
+                        <option>Avançado</option>
+                        <option>Competidor</option>
+                     </select>
+                  </div>
+                  <div>
+                     <label className="text-xs text-slate-500 font-bold block mb-2">DURAÇÃO (MIN)</label>
+                     <select value={duration} onChange={e => setDuration(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-lg p-3 text-white outline-none focus:border-slate-600 transition-colors">
+                        <option value="15">15 Min (Express)</option>
+                        <option value="30">30 Min</option>
+                        <option value="45">45 Min</option>
+                        <option value="60">60 Min</option>
+                     </select>
+                  </div>
+                  <div>
+                     <label className="text-xs text-slate-500 font-bold block mb-2">EQUIPAMENTO</label>
+                     <select value={equipment} onChange={e => setEquipment(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-lg p-3 text-white outline-none focus:border-slate-600 transition-colors">
+                        <option>Sombra (Sem equipamento)</option>
+                        <option>Saco de Pancada</option>
+                        <option>Manopla (Com parceiro)</option>
+                        <option>Boneco de Treino</option>
+                     </select>
+                  </div>
+                  <div className="md:col-span-2">
+                     <label className="text-xs text-slate-500 font-bold block mb-2">FOCO DO TREINO</label>
+                     <select value={focus} onChange={e => setFocus(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-lg p-3 text-white outline-none focus:border-slate-600 transition-colors">
+                        <option>Técnica Pura (Forma)</option>
+                        <option>Cardio/Conditioning (Alta Intensidade)</option>
+                        <option>Combinações de Força</option>
+                        <option>Reflexos e Defesa</option>
+                     </select>
+                  </div>
+               </div>
+
+               <button 
+                  onClick={handleGenerate}
+                  disabled={loading}
+                  className={`w-full ${accentColor} text-black font-bold py-4 rounded-xl mt-4 hover:brightness-110 transition-all shadow-lg flex justify-center items-center gap-2`}
+                >
+                  {loading ? (
+                    <>
+                       <div className="w-5 h-5 border-2 border-black border-t-transparent rounded-full animate-spin"></div>
+                       SENSEI ESTÁ PLANEJANDO...
+                    </>
+                  ) : (
+                    <>
+                       <Swords size={20} />
+                       INICIAR PROTOCOLO DE COMBATE
+                    </>
+                  )}
+                </button>
+             </div>
+           ) : (
+             <div className="space-y-6">
+                <div className="flex justify-between items-start border-b border-slate-800 pb-4">
+                   <div>
+                      <h2 className="text-3xl font-bold text-white uppercase italic">{plan.style}</h2>
+                      <div className="flex gap-2 mt-2">
+                         <span className="text-xs bg-slate-950 text-slate-400 px-2 py-1 rounded border border-slate-800">{plan.duration}</span>
+                         <span className="text-xs bg-slate-950 text-slate-400 px-2 py-1 rounded border border-slate-800">{plan.focus}</span>
+                      </div>
+                   </div>
+                   <button onClick={() => setPlan(null)} className="text-xs bg-slate-800 text-slate-300 px-3 py-1.5 rounded-lg hover:bg-slate-700 hover:text-white transition-all">NOVO TREINO</button>
                 </div>
 
-                <div className="space-y-4">
+                <div className="bg-slate-950 p-4 rounded-xl border border-slate-800">
+                   <h3 className="font-bold text-emerald-500 mb-2 flex items-center gap-2"><Zap size={16} /> AQUECIMENTO</h3>
+                   <ul className="list-disc list-inside text-slate-400 space-y-1 text-sm">
+                      {plan.warmup.map((w, i) => <li key={i}>{w}</li>)}
+                   </ul>
+                </div>
+
+                <div className="space-y-3">
+                   {plan.rounds.map((round, i) => (
+                      <div key={i} className="bg-slate-950/50 p-4 rounded-xl border border-slate-800 hover:border-slate-600 transition-colors group">
+                         <div className="flex justify-between items-center mb-3">
+                            <div className="flex items-center gap-3">
+                               <span className={`text-xl font-black ${accentColor.replace('bg-', 'text-')}`}>R{round.number}</span>
+                               <span className="font-bold text-white">{round.name}</span>
+                            </div>
+                            <span className="text-xs font-mono bg-slate-900 px-2 py-1 rounded text-slate-500 group-hover:text-white transition-colors">{round.duration}</span>
+                         </div>
+                         <div className="mb-2 text-xs text-slate-500 uppercase tracking-wider font-bold">Foco: {round.focusPoint}</div>
+                         <div className="space-y-2 pl-4 border-l-2 border-slate-800">
+                            {round.drills.map((drill, j) => (
+                               <p key={j} className="text-slate-300 text-sm flex items-start gap-2">
+                                  <span className="mt-1.5 w-1 h-1 rounded-full bg-slate-500"></span>
+                                  {drill}
+                               </p>
+                            ))}
+                         </div>
+                      </div>
+                   ))}
+                </div>
+
+                <div className="bg-slate-950 p-4 rounded-xl border border-slate-800">
+                   <h3 className="font-bold text-blue-500 mb-2 flex items-center gap-2"><RefreshCw size={16} /> RESFRIAMENTO</h3>
+                   <ul className="list-disc list-inside text-slate-400 space-y-1 text-sm">
+                      {plan.cooldown.map((c, i) => <li key={i}>{c}</li>)}
+                   </ul>
+                </div>
+             </div>
+           )}
+        </div>
+      ) : (
+        <div className="bg-slate-900/80 border border-slate-800 rounded-2xl flex-1 flex flex-col overflow-hidden">
+           <div className="flex-1 p-6 overflow-y-auto space-y-4">
+              {chatHistory.length === 0 && (
+                 <div className="h-full flex flex-col items-center justify-center text-slate-500 opacity-60">
+                    <Swords size={48} className="mb-4" />
+                    <p>Pergunte ao Sensei sobre técnicas, estratégias ou filosofia de luta.</p>
+                 </div>
+              )}
+              {chatHistory.map((msg, i) => (
+                 <div key={i} className={`flex gap-4 ${msg.role === 'user' ? 'flex-row-reverse' : 'flex-row'}`}>
+                    <div className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 border border-slate-700 ${msg.role === 'user' ? 'bg-slate-800' : 'bg-slate-950'}`}>
+                       {msg.role === 'user' ? <UserIcon size={16} /> : <Swords size={16} className={accentColor.replace('bg-', 'text-')} />}
+                    </div>
+                    <div className={`max-w-[85%] p-3 rounded-xl text-sm ${msg.role === 'user' ? 'bg-slate-800 text-white' : 'bg-slate-950 border border-slate-800 text-slate-300'}`}>
+                       <MarkdownRenderer content={msg.text} accentColor={accentColor} />
+                    </div>
+                 </div>
+              ))}
+              <div ref={chatEndRef} />
+           </div>
+           <div className="p-4 bg-slate-950 border-t border-slate-900 flex gap-2">
+              <input 
+                 value={chatInput}
+                 onChange={e => setChatInput(e.target.value)}
+                 onKeyDown={e => e.key === 'Enter' && handleChat()}
+                 placeholder="Ex: Como melhorar meu cruzado de esquerda?"
+                 className="flex-1 bg-slate-900 border border-slate-800 rounded-lg p-3 text-white outline-none focus:border-slate-600"
+              />
+              <button onClick={handleChat} disabled={loading} className={`${accentColor} p-3 rounded-lg text-black hover:brightness-110 disabled:opacity-50`}>
+                 <Send size={20} />
+              </button>
+           </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+const TrainingView: React.FC<{ accentColor: string, user: UserProfile, onShowToast: (msg: string) => void }> = ({ accentColor, user, onShowToast }) => {
+  const [mode, setMode] = useState<'plan' | 'chat'>('plan');
+  const [loading, setLoading] = useState(false);
+  const [plan, setPlan] = useState<TrainingPlan | null>(null);
+  const [chatHistory, setChatHistory] = useState<{role: string, text: string}[]>([]);
+  const [input, setInput] = useState('');
+  const chatBottomRef = useRef<HTMLDivElement>(null);
+
+  // Enhanced Form states
+  const [goal, setGoal] = useState('Hipertrofia (Ganho de Massa)');
+  const [level, setLevel] = useState('Intermediário');
+  const [days, setDays] = useState('4');
+  const [duration, setDuration] = useState('60');
+  const [equipment, setEquipment] = useState('Academia Completa');
+  const [focusArea, setFocusArea] = useState('');
+  const [injuries, setInjuries] = useState('');
+
+  useEffect(() => {
+    if (chatBottomRef.current) {
+      chatBottomRef.current.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [chatHistory, loading, mode]);
+
+  const handleGenerate = async () => {
+    setLoading(true);
+    const result = await geminiService.generateTrainingPlan(
+      goal, 
+      level, 
+      days, 
+      duration, 
+      equipment, 
+      focusArea, 
+      injuries
+    );
+    setPlan(result);
+    setLoading(false);
+    db.logActivity('training', 20, 'Generated Training Plan');
+    onShowToast("+20 XP");
+  };
+
+  const handleChat = async () => {
+    if (!input.trim()) return;
+    const userMsg = { role: 'user', text: input };
+    setChatHistory(prev => [...prev, userMsg as any]);
+    setInput('');
+    setLoading(true);
+    // Pass user context
+    const response = await geminiService.chatWithCoach(input, user);
+    setChatHistory(prev => [...prev, { role: 'model', text: response }]);
+    setLoading(false);
+  };
+
+  return (
+    <div className="h-full flex flex-col">
+      <div className="flex bg-slate-900 p-1 rounded-lg self-center border border-slate-800 mb-6">
+        <button onClick={() => setMode('plan')} className={`px-6 py-2 rounded-md font-bold transition-all ${mode === 'plan' ? 'bg-slate-800 text-white' : 'text-slate-500'}`}>PLANO</button>
+        <button onClick={() => setMode('chat')} className={`px-6 py-2 rounded-md font-bold transition-all ${mode === 'chat' ? 'bg-slate-800 text-white' : 'text-slate-500'}`}>CHAT IA</button>
+      </div>
+
+      {mode === 'plan' && (
+        <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-6 max-w-4xl mx-auto w-full">
+          {!plan ? (
+             <div className="space-y-6">
+                <div className="flex items-center gap-4 mb-4">
+                  <div className={`p-3 rounded-lg ${accentColor} text-black`}>
+                    <Dumbbell size={24} />
+                  </div>
                   <div>
-                    <label className="text-xs font-bold text-slate-500 uppercase mb-1 block">Objetivo</label>
-                    <select 
-                      value={dietGoal}
-                      onChange={(e) => setDietGoal(e.target.value)}
-                      className="w-full bg-slate-950 border border-slate-800 rounded-lg p-3 text-white outline-none focus:border-emerald-500"
-                    >
-                      <option>Perder Peso (Definição)</option>
-                      <option>Ganhar Peso (Massa Muscular)</option>
-                      <option>Manter Peso (Saudável)</option>
+                    <h2 className="text-xl font-bold text-white">Gerador de Treino IA</h2>
+                    <p className="text-slate-400 text-sm">Preencha os dados táticos para gerar seu plano.</p>
+                  </div>
+                </div>
+                
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <label className="text-xs text-slate-500 font-bold block mb-2">OBJETIVO PRINCIPAL</label>
+                    <select value={goal} onChange={e=>setGoal(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-lg p-3 text-white outline-none focus:border-slate-600 transition-colors">
+                      <option>Hipertrofia (Ganho de Massa)</option>
+                      <option>Força Bruta</option>
+                      <option>Perda de Peso / Definição</option>
+                      <option>Resistência / Cardio</option>
+                      <option>Calistenia</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-xs text-slate-500 font-bold block mb-2">NÍVEL</label>
+                    <select value={level} onChange={e=>setLevel(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-lg p-3 text-white outline-none focus:border-slate-600 transition-colors">
+                      <option>Iniciante</option>
+                      <option>Intermediário</option>
+                      <option>Avançado</option>
+                      <option>Spartan (Elite)</option>
+                    </select>
+                  </div>
+                  
+                  <div>
+                    <label className="text-xs text-slate-500 font-bold block mb-2">DIAS/SEMANA</label>
+                    <select value={days} onChange={e=>setDays(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-lg p-3 text-white outline-none focus:border-slate-600 transition-colors">
+                      <option>2</option>
+                      <option>3</option>
+                      <option>4</option>
+                      <option>5</option>
+                      <option>6</option>
                     </select>
                   </div>
 
-                  <div>
-                    <label className="text-xs font-bold text-slate-500 uppercase mb-1 block">O que você gosta de comer?</label>
-                    <textarea 
-                      value={dietLikes}
-                      onChange={(e) => setDietLikes(e.target.value)}
-                      placeholder="Ex: Frango, ovo, batata doce, aveia, banana..."
-                      className="w-full bg-slate-950 border border-slate-800 rounded-lg p-3 text-white outline-none focus:border-emerald-500 min-h-[60px]"
-                    />
+                   <div>
+                    <label className="text-xs text-slate-500 font-bold block mb-2">TEMPO DISPONÍVEL (MIN)</label>
+                    <select value={duration} onChange={e=>setDuration(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-lg p-3 text-white outline-none focus:border-slate-600 transition-colors">
+                      <option value="30">30 Minutos</option>
+                      <option value="45">45 Minutos</option>
+                      <option value="60">60 Minutos</option>
+                      <option value="90">90 Minutos</option>
+                    </select>
+                  </div>
+                  
+                  <div className="md:col-span-2">
+                     <label className="text-xs text-slate-500 font-bold block mb-2">EQUIPAMENTO</label>
+                     <select value={equipment} onChange={e=>setEquipment(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-lg p-3 text-white outline-none focus:border-slate-600 transition-colors">
+                       <option>Academia Completa</option>
+                       <option>Halteres (Home Gym)</option>
+                       <option>Apenas Peso do Corpo (Calistenia)</option>
+                       <option>Barra e Anilhas</option>
+                     </select>
                   </div>
 
-                  <div>
-                    <label className="text-xs font-bold text-slate-500 uppercase mb-1 block">O que tem na sua despensa agora?</label>
-                    <textarea 
-                      value={dietAvailable}
-                      onChange={(e) => setDietAvailable(e.target.value)}
-                      placeholder="Ex: Arroz, feijão, macarrão, alguns ovos, cenoura..."
-                      className="w-full bg-slate-950 border border-slate-800 rounded-lg p-3 text-white outline-none focus:border-emerald-500 min-h-[60px]"
-                    />
+                  <div className="md:col-span-2">
+                     <label className="text-xs text-slate-500 font-bold block mb-2">PONTOS FRACOS / FOCO (OPCIONAL)</label>
+                     <input 
+                        value={focusArea}
+                        onChange={e => setFocusArea(e.target.value)}
+                        placeholder="Ex: Peitoral superior, Panturrilhas, Braços"
+                        className="w-full bg-slate-950 border border-slate-800 rounded-lg p-3 text-white outline-none focus:border-slate-600 transition-colors"
+                     />
                   </div>
 
-                  <div>
-                    <label className="text-xs font-bold text-slate-500 uppercase mb-1 block">Orçamento Limite (Opcional)</label>
-                    <div className="flex items-center gap-2 bg-slate-950 border border-slate-800 rounded-lg p-3 focus-within:border-emerald-500">
-                      <span className="text-slate-500 font-bold">R$</span>
-                      <input 
-                        type="number"
-                        value={dietBudget}
-                        onChange={(e) => setDietBudget(e.target.value)}
-                        placeholder="Ex: 20"
-                        className="bg-transparent text-white outline-none w-full"
-                      />
+                  <div className="md:col-span-2">
+                     <label className="text-xs text-slate-500 font-bold block mb-2">LESÕES OU LIMITAÇÕES</label>
+                     <input 
+                        value={injuries}
+                        onChange={e => setInjuries(e.target.value)}
+                        placeholder="Ex: Dor no joelho esquerdo, Hérnia de disco..."
+                        className="w-full bg-slate-950 border border-slate-800 rounded-lg p-3 text-white outline-none focus:border-slate-600 transition-colors"
+                     />
+                  </div>
+                </div>
+
+                <button 
+                  onClick={handleGenerate}
+                  disabled={loading}
+                  className={`w-full ${accentColor} text-black font-bold py-4 rounded-xl mt-4 hover:brightness-110 transition-all shadow-lg flex justify-center items-center gap-2`}
+                >
+                  {loading ? (
+                    <>
+                       <div className="w-5 h-5 border-2 border-black border-t-transparent rounded-full animate-spin"></div>
+                       ANALISANDO DADOS BIOMÉTRICOS...
+                    </>
+                  ) : (
+                    <>
+                       <BrainCircuit size={20} />
+                       GERAR TREINO COMPLETO
+                    </>
+                  )}
+                </button>
+             </div>
+          ) : (
+            <div>
+              <div className="flex justify-between items-center mb-6">
+                <div>
+                  <h3 className="text-2xl font-bold text-white uppercase">{plan.split}</h3>
+                  <p className="text-slate-400 text-xs mt-1">GERADO POR IA • {goal} • {level}</p>
+                </div>
+                <button onClick={() => setPlan(null)} className="text-xs bg-slate-800 text-slate-300 px-3 py-1.5 rounded-lg hover:bg-slate-700 hover:text-white transition-all">NOVO PLANO</button>
+              </div>
+              <div className="grid gap-4">
+                {plan.days.map((d, i) => (
+                  <div key={i} className="bg-slate-950 p-5 rounded-xl border border-slate-800 hover:border-slate-700 transition-colors">
+                    <div className="flex justify-between items-center mb-4 border-b border-slate-800 pb-3">
+                       <span className={`font-bold text-lg ${accentColor.replace('bg-', 'text-')}`}>{d.day}</span>
+                       <span className="text-slate-400 text-sm bg-slate-900 px-2 py-1 rounded">{d.focus}</span>
+                    </div>
+                    <div className="space-y-4">
+                      {d.exercises.map((ex, j) => (
+                        <div key={j} className="group">
+                          <div className="flex justify-between items-center text-sm">
+                            <span className="text-slate-200 font-medium group-hover:text-white transition-colors">{ex.name}</span>
+                            <span className="text-slate-500 font-mono font-bold bg-slate-900 px-2 py-1 rounded">{ex.sets} x {ex.reps}</span>
+                          </div>
+                          
+                          {(ex.substitution || ex.tip) && (
+                            <div className="mt-2 pl-3 border-l-2 border-slate-800 space-y-1">
+                              {ex.substitution && (
+                                <div className="flex items-center gap-2 text-xs text-slate-500">
+                                  <RefreshCw size={12} className={accentColor.replace('bg-', 'text-')} />
+                                  <span>Alt: <span className="text-slate-400">{ex.substitution}</span></span>
+                                </div>
+                              )}
+                              {ex.tip && (
+                                <div className="flex items-center gap-2 text-xs text-slate-500">
+                                  <AlertCircle size={12} className="text-yellow-500/70" />
+                                  <span className="italic text-slate-400/80">{ex.tip}</span>
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      ))}
                     </div>
                   </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
-                  <button 
-                    onClick={handleGenerateDiet}
-                    disabled={isGeneratingDiet}
-                    className="w-full py-4 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-xl transition-all shadow-lg shadow-emerald-900/20 disabled:opacity-50 flex items-center justify-center gap-2 mt-2"
-                  >
-                    {isGeneratingDiet ? (
-                      <><RefreshCw className="animate-spin" /> CRIANDO MENU...</>
-                    ) : (
-                      <><Utensils /> GERAR PLANO ALIMENTAR</>
-                    )}
-                  </button>
-                </div>
-              </Card>
-
-              {state.dietRecipes.length > 0 && (
-                <div className="space-y-4">
-                  <h3 className="font-bold text-slate-200 flex items-center gap-2">
-                    <Utensils size={18} className="text-orange-500" /> Receitas Sugeridas
-                  </h3>
-                  
-                  {state.dietRecipes.map((recipe, idx) => (
-                    <Card key={idx} className="overflow-hidden">
-                      <div className="bg-slate-800/50 p-4 border-b border-slate-800">
-                        <div className="flex justify-between items-start mb-2">
-                          <h3 className="font-bold text-lg text-white">{recipe.name}</h3>
-                          <span className="text-xs font-bold bg-slate-950 text-emerald-400 px-2 py-1 rounded border border-emerald-900/30 whitespace-nowrap">
-                            {recipe.calories}
-                          </span>
-                        </div>
-                        <div className="flex gap-4 text-xs text-slate-400 mb-2">
-                          <span className="flex items-center gap-1"><Clock size={12} /> {recipe.time}</span>
-                          <span className="flex items-center gap-1"><Banknote size={12} /> {recipe.costEstimate}</span>
-                        </div>
-                        <p className="text-xs text-slate-500 italic">{recipe.benefits}</p>
-                      </div>
-                      
-                      <div className="p-4 space-y-4">
-                        <div>
-                          <h4 className="text-xs font-bold text-slate-500 uppercase mb-2">Ingredientes</h4>
-                          <ul className="text-sm text-slate-300 list-disc list-inside space-y-1">
-                            {recipe.ingredients.map((ing, i) => (
-                              <li key={i}>{ing}</li>
-                            ))}
-                          </ul>
-                        </div>
-
-                        <div>
-                          <h4 className="text-xs font-bold text-slate-500 uppercase mb-2">Modo de Preparo</h4>
-                          <ol className="text-sm text-slate-300 list-decimal list-inside space-y-2">
-                            {recipe.instructions.map((inst, i) => (
-                              <li key={i}>{inst}</li>
-                            ))}
-                          </ol>
-                        </div>
-
-                        <a 
-                          href={`https://www.youtube.com/results?search_query=${encodeURIComponent(recipe.videoQuery)}`} 
-                          target="_blank" 
-                          rel="noopener noreferrer"
-                          className="w-full py-3 bg-red-600 hover:bg-red-500 text-white font-bold rounded-lg transition-all flex items-center justify-center gap-2 text-sm"
-                        >
-                          <Youtube size={18} /> VER VÍDEO DA RECEITA
-                        </a>
-                      </div>
-                    </Card>
-                  ))}
+      {mode === 'chat' && (
+        <div className="bg-slate-900/80 border border-slate-800 rounded-2xl flex-1 max-w-4xl mx-auto w-full flex flex-col overflow-hidden">
+           <div className="flex-1 p-6 overflow-y-auto space-y-6">
+              {chatHistory.length === 0 && (
+                <div className="h-full flex flex-col items-center justify-center text-slate-600">
+                   <div className={`p-6 rounded-full bg-slate-900 border border-slate-800 mb-4`}>
+                      <BrainCircuit size={48} className={`opacity-50 ${accentColor.replace('bg-', 'text-')}`} />
+                   </div>
+                   <p className="font-bold text-slate-500">TREINADOR IA ONLINE</p>
+                   <p className="text-sm text-slate-600">Pergunte sobre execução, dieta ou periodização.</p>
                 </div>
               )}
-            </div>
-          )}
+              {chatHistory.map((msg, i) => (
+                <div key={i} className={`flex gap-4 ${msg.role === 'user' ? 'flex-row-reverse' : 'flex-row'}`}>
+                  {/* Avatar */}
+                  <div className={`w-10 h-10 rounded-full flex items-center justify-center shrink-0 border border-slate-700 ${msg.role === 'user' ? 'bg-slate-800' : 'bg-slate-950'}`}>
+                    {msg.role === 'user' ? <UserIcon size={20} className="text-slate-400" /> : <Bot size={20} className={accentColor.replace('bg-', 'text-')} />}
+                  </div>
 
-          {activeTab === 'workout' && (
-             <div className="space-y-6 animate-in fade-in slide-in-from-right-8 duration-300">
-               {/* Workout Sub-Navigation */}
-               <div className="flex justify-center gap-2 bg-slate-900 p-1 rounded-xl mb-4">
-                  <button 
-                    onClick={() => setWorkoutSubTab('plan')}
-                    className={`flex-1 py-2 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-2 ${workoutSubTab === 'plan' ? 'bg-slate-800 text-emerald-400 shadow-sm' : 'text-slate-500 hover:text-slate-300'}`}
-                  >
-                    <Dumbbell size={16} /> PLANO
-                  </button>
-                  <button 
-                    onClick={() => setWorkoutSubTab('chat')}
-                    className={`flex-1 py-2 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-2 ${workoutSubTab === 'chat' ? 'bg-slate-800 text-blue-400 shadow-sm' : 'text-slate-500 hover:text-slate-300'}`}
-                  >
-                    <MessageSquare size={16} /> CHAT IA
-                  </button>
-                  <button 
-                    onClick={() => setWorkoutSubTab('journal')}
-                    className={`flex-1 py-2 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-2 ${workoutSubTab === 'journal' ? 'bg-slate-800 text-orange-400 shadow-sm' : 'text-slate-500 hover:text-slate-300'}`}
-                  >
-                    <Book size={16} /> DIÁRIO
-                  </button>
-               </div>
-
-               {workoutSubTab === 'chat' && (
-                 <Card className="flex flex-col h-[600px]">
-                    <div className="bg-slate-800/50 p-4 border-b border-slate-800 flex items-center gap-3">
-                       <div className="bg-blue-500/20 p-2 rounded-full">
-                          <Bot className="text-blue-400" size={20} />
-                       </div>
-                       <div>
-                          <h3 className="text-white font-bold">Treinador IA</h3>
-                          <p className="text-[10px] text-slate-400">Especialista em Força e Condicionamento</p>
-                       </div>
-                    </div>
-                    
-                    <div className="flex-1 overflow-y-auto p-4 space-y-4">
-                       {state.workoutChatHistory.length === 0 && (
-                          <div className="text-center text-slate-500 text-sm mt-10">
-                             Pergunte sobre exercícios, substituições ou técnica.
-                          </div>
-                       )}
-                       {state.workoutChatHistory.map((msg, i) => (
-                          <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                             <div className={`max-w-[80%] rounded-2xl px-4 py-3 text-sm ${
-                                msg.role === 'user' 
-                                ? 'bg-blue-600 text-white rounded-tr-sm' 
-                                : 'bg-slate-800 text-slate-200 rounded-tl-sm'
-                             }`}>
-                                {msg.text}
-                             </div>
-                          </div>
-                       ))}
-                       {isChatting && (
-                          <div className="flex justify-start">
-                             <div className="bg-slate-800/50 text-slate-400 text-xs px-4 py-2 rounded-full animate-pulse">
-                                Digitando...
-                             </div>
-                          </div>
-                       )}
-                       <div ref={chatEndRef} />
-                    </div>
-
-                    <div className="p-4 border-t border-slate-800 bg-slate-900">
-                       <div className="flex gap-2">
-                          <input 
-                             value={chatInput}
-                             onChange={(e) => setChatInput(e.target.value)}
-                             onKeyDown={(e) => e.key === 'Enter' && handleChatSubmit()}
-                             placeholder="Ex: Como melhorar meu agachamento?"
-                             className="flex-1 bg-slate-950 border border-slate-800 rounded-lg px-4 py-3 text-sm text-white focus:border-blue-500 outline-none"
-                          />
-                          <button 
-                             onClick={handleChatSubmit}
-                             disabled={!chatInput.trim() || isChatting}
-                             className="bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white p-3 rounded-lg transition-colors"
-                          >
-                             <Send size={18} />
-                          </button>
-                       </div>
-                    </div>
-                 </Card>
-               )}
-
-               {workoutSubTab === 'journal' && (
-                 <div className="space-y-6">
-                    <Card className="p-6">
-                       <h3 className="text-lg font-bold text-white mb-4 flex items-center gap-2">
-                          <Book className="text-orange-500" /> Diário de Bordo
-                       </h3>
-                       <p className="text-xs text-slate-400 mb-4">
-                          Registre sensações, dores, vitórias ou pensamentos aleatórios sobre seu treino.
-                       </p>
-                       
-                       <div className="flex gap-2 mb-6">
-                          <textarea
-                             value={journalInput}
-                             onChange={(e) => setJournalInput(e.target.value)}
-                             placeholder="Ex: Hoje senti mais energia no começo, mas o final foi arrastado..."
-                             className="flex-1 bg-slate-950 border border-slate-800 rounded-lg p-3 text-white text-sm outline-none focus:border-orange-500 min-h-[80px]"
-                          />
-                          <button 
-                             onClick={handleAddJournal}
-                             disabled={!journalInput.trim()}
-                             className="bg-slate-800 hover:bg-orange-600 hover:text-white text-slate-400 p-3 rounded-lg transition-all flex flex-col items-center justify-center gap-1 w-20"
-                          >
-                             <Save size={20} />
-                             <span className="text-[10px] font-bold">SALVAR</span>
-                          </button>
-                       </div>
-
-                       <div className="space-y-2 max-h-[300px] overflow-y-auto pr-2 custom-scrollbar">
-                          {state.workoutJournal.filter(j => j.date === new Date().toISOString().split('T')[0]).length === 0 && (
-                             <div className="text-center text-slate-600 text-xs py-4 border border-dashed border-slate-800 rounded-lg">
-                                Nenhuma nota hoje.
-                             </div>
-                          )}
-                          {state.workoutJournal
-                             .sort((a,b) => b.timestamp - a.timestamp)
-                             .map(entry => (
-                             <div key={entry.id} className="bg-slate-950 border border-slate-800 p-3 rounded-lg">
-                                <div className="text-[10px] text-slate-500 mb-1 flex justify-between">
-                                   <span>{new Date(entry.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</span>
-                                   <span>{new Date(entry.timestamp).toLocaleDateString()}</span>
-                                </div>
-                                <p className="text-sm text-slate-300 whitespace-pre-wrap">{entry.text}</p>
-                             </div>
-                          ))}
-                       </div>
-                    </Card>
-
-                    <Card className="p-6 border-orange-900/30 bg-orange-950/5">
-                       <h3 className="text-lg font-bold text-white mb-2 flex items-center gap-2">
-                          <BrainCircuit className="text-orange-500" /> Análise Diária
-                       </h3>
-                       <p className="text-xs text-slate-400 mb-4">
-                          A IA lerá seu diário, suas cargas e seu RPE de hoje para sugerir ajustes para amanhã.
-                       </p>
-                       
-                       {journalAnalysisResult && (
-                          <div className="bg-slate-950 p-4 rounded-lg border border-orange-500/20 mb-4">
-                             <p className="text-sm text-slate-200 whitespace-pre-line leading-relaxed">{journalAnalysisResult}</p>
-                          </div>
-                       )}
-
-                       <div className="flex gap-2">
-                          <button 
-                             onClick={handleAnalyzeJournal}
-                             disabled={isAnalyzingJournal}
-                             className="flex-1 py-3 bg-slate-800 hover:bg-slate-700 text-white font-bold rounded-lg transition-all border border-slate-700 disabled:opacity-50 flex items-center justify-center gap-2"
-                          >
-                             {isAnalyzingJournal ? <RefreshCw className="animate-spin" /> : <Zap fill="currentColor" />}
-                             ANALISAR DIA
-                          </button>
-                          
-                          <button 
-                             onClick={handleSmartPlanAdjustment}
-                             disabled={isGeneratingWorkout}
-                             className="flex-1 py-3 bg-orange-600 hover:bg-orange-500 text-white font-bold rounded-lg transition-all shadow-lg shadow-orange-900/20 disabled:opacity-50 flex items-center justify-center gap-2"
-                          >
-                             {isGeneratingWorkout ? <RefreshCw className="animate-spin" /> : <Wrench size={18} />}
-                             AJUSTAR PLANO AGORA
-                          </button>
-                       </div>
-                    </Card>
-                 </div>
-               )}
-
-               {workoutSubTab === 'plan' && !state.workoutPlan && (
-                 <Card className="p-6">
-                    <div className="flex items-center gap-3 mb-6">
-                       <div className="bg-emerald-500/10 p-3 rounded-xl">
-                          <BicepsFlexed className="text-emerald-500" size={32} />
-                       </div>
-                       <div>
-                          <h2 className="text-xl font-bold text-white">Gerador de Treino IA</h2>
-                          <p className="text-xs text-slate-400">Preencha os dados táticos para gerar seu plano.</p>
-                       </div>
-                    </div>
-
-                    <div className="space-y-4">
-                       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                          <div>
-                             <label className="text-xs font-bold text-slate-500 uppercase mb-1 block">Objetivo Principal</label>
-                             <select 
-                               value={workoutGoal} 
-                               onChange={(e) => setWorkoutGoal(e.target.value)}
-                               className="w-full bg-slate-950 border border-slate-800 rounded-lg p-3 text-white outline-none focus:border-emerald-500"
-                             >
-                                <option>Hipertrofia (Ganho de Massa)</option>
-                                <option>Emagrecimento (Definição)</option>
-                                <option>Força Pura (Powerlifting)</option>
-                                <option>Resistência / Funcional</option>
-                             </select>
-                          </div>
-                          <div>
-                             <label className="text-xs font-bold text-slate-500 uppercase mb-1 block">Nível</label>
-                             <select 
-                               value={workoutLevel} 
-                               onChange={(e) => setWorkoutLevel(e.target.value)}
-                               className="w-full bg-slate-950 border border-slate-800 rounded-lg p-3 text-white outline-none focus:border-emerald-500"
-                             >
-                                <option>Iniciante</option>
-                                <option>Intermediário</option>
-                                <option>Avançado</option>
-                             </select>
-                          </div>
-                       </div>
-
-                       <div className="grid grid-cols-2 gap-4">
-                          <div>
-                             <label className="text-xs font-bold text-slate-500 uppercase mb-1 block">Dias/Semana</label>
-                             <select 
-                               value={workoutDays} 
-                               onChange={(e) => setWorkoutDays(e.target.value)}
-                               className="w-full bg-slate-950 border border-slate-800 rounded-lg p-3 text-white outline-none focus:border-emerald-500"
-                             >
-                                <option>2</option>
-                                <option>3</option>
-                                <option>4</option>
-                                <option>5</option>
-                                <option>6</option>
-                             </select>
-                          </div>
-                          <div>
-                             <label className="text-xs font-bold text-slate-500 uppercase mb-1 block">Tempo Disponível (min)</label>
-                             <input 
-                                type="number" 
-                                value={workoutTimeAvailable}
-                                onChange={(e) => setWorkoutTimeAvailable(e.target.value)}
-                                className="w-full bg-slate-950 border border-slate-800 rounded-lg p-3 text-white outline-none focus:border-emerald-500"
-                             />
-                          </div>
-                       </div>
-
-                       <div>
-                          <label className="text-xs font-bold text-slate-500 uppercase mb-1 block">Equipamento</label>
-                          <select 
-                            value={workoutEquipment} 
-                            onChange={(e) => setWorkoutEquipment(e.target.value)}
-                            className="w-full bg-slate-950 border border-slate-800 rounded-lg p-3 text-white outline-none focus:border-emerald-500"
-                          >
-                             <option>Academia Completa</option>
-                             <option>Halteres em Casa</option>
-                             <option>Peso do Corpo (Calistenia)</option>
-                             <option>Academia de Prédio (Básico)</option>
-                          </select>
-                       </div>
-
-                       <div>
-                          <label className="text-xs font-bold text-slate-500 uppercase mb-1 block">Pontos Fracos / Foco</label>
-                          <input 
-                             type="text" 
-                             value={workoutWeakPoints}
-                             onChange={(e) => setWorkoutWeakPoints(e.target.value)}
-                             placeholder="Ex: Peitoral superior, Panturrilhas, Braços"
-                             className="w-full bg-slate-950 border border-slate-800 rounded-lg p-3 text-white outline-none focus:border-emerald-500"
-                          />
-                       </div>
-
-                       <div>
-                          <label className="text-xs font-bold text-slate-500 uppercase mb-1 block">Exercícios Favoritos (Opcional)</label>
-                          <input 
-                             type="text" 
-                             value={workoutFavorites}
-                             onChange={(e) => setWorkoutFavorites(e.target.value)}
-                             placeholder="Ex: Agachamento, Supino, Barra Fixa"
-                             className="w-full bg-slate-950 border border-slate-800 rounded-lg p-3 text-white outline-none focus:border-emerald-500"
-                          />
-                       </div>
-
-                       <div>
-                          <label className="text-xs font-bold text-slate-500 uppercase mb-1 block">Estilo de Treino</label>
-                          <select 
-                            value={workoutStylePreference} 
-                            onChange={(e) => setWorkoutStylePreference(e.target.value)}
-                            className="w-full bg-slate-950 border border-slate-800 rounded-lg p-3 text-white outline-none focus:border-emerald-500"
-                          >
-                             <option>Padrão (Balanced)</option>
-                             <option>Old School (Cargas altas, descanso longo)</option>
-                             <option>Metabólico (Alta repetição, pouco descanso)</option>
-                             <option>HIT (Alta Intensidade, Baixo Volume)</option>
-                          </select>
-                       </div>
-
-                       <div>
-                          <label className="text-xs font-bold text-slate-500 uppercase mb-1 block">Lesões ou Limitações</label>
-                          <input 
-                             type="text" 
-                             value={workoutInjuries}
-                             onChange={(e) => setWorkoutInjuries(e.target.value)}
-                             placeholder="Ex: Dor no joelho esquerdo, Hérnia de disco..."
-                             className="w-full bg-slate-950 border border-slate-800 rounded-lg p-3 text-white outline-none focus:border-emerald-500"
-                          />
-                       </div>
-
-                       <button 
-                         onClick={handleGenerateWorkout}
-                         disabled={isGeneratingWorkout}
-                         className="w-full py-4 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-xl transition-all shadow-lg shadow-emerald-900/20 disabled:opacity-50 flex items-center justify-center gap-2 mt-4"
-                       >
-                         {isGeneratingWorkout ? (
-                            <><RefreshCw className="animate-spin" /> CRIANDO ESTRATÉGIA...</>
-                         ) : (
-                            <><BrainCircuit /> GERAR TREINO COMPLETO</>
-                         )}
-                       </button>
-                    </div>
-                 </Card>
-               )}
-
-               {workoutSubTab === 'plan' && state.workoutPlan && (
-                 <div className="space-y-6">
-                    {/* Header e Reset */}
-                    <div className="flex items-center justify-between">
-                       <h2 className="text-lg font-bold text-white flex items-center gap-2">
-                          <Activity className="text-emerald-500" /> PLANO ATIVO
-                       </h2>
-                       <button 
-                         onClick={resetWorkout}
-                         className="text-xs text-red-400 hover:text-red-300 underline"
-                       >
-                          Resetar Plano
-                       </button>
-                    </div>
-
-                    <Card className="p-4 bg-slate-900/80 border-emerald-900/30">
-                       <h3 className="text-sm font-bold text-emerald-400 mb-2 uppercase tracking-wide">Visão Geral</h3>
-                       <p className="text-sm text-slate-300 leading-relaxed">{state.workoutPlan.overview}</p>
-                    </Card>
-
-                    {/* Check-in Diário */}
-                    <Card className="p-6 border-blue-900/30 bg-blue-950/5 relative overflow-hidden">
-                       <div className="absolute top-0 right-0 p-4 opacity-5">
-                          <ClipboardList size={100} className="text-blue-500" />
-                       </div>
-                       <h3 className="text-lg font-bold text-white mb-4 flex items-center gap-2">
-                          <AlertOctagon className="text-blue-500" size={20} /> Check-in Diário de Treino
-                       </h3>
-                       
-                       <div className="mb-4">
-                          <label className="text-xs font-bold text-slate-400 uppercase mb-2 block flex justify-between">
-                             <span>Percepção de Esforço (RPE 1-10)</span>
-                             <span className="text-blue-400 font-mono">{dailyRPE}</span>
-                          </label>
-                          <input 
-                             type="range" 
-                             min="1" 
-                             max="10" 
-                             value={dailyRPE} 
-                             onChange={(e) => setDailyRPE(Number(e.target.value))}
-                             className="w-full h-2 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-blue-500"
-                          />
-                          <div className="flex justify-between text-[10px] text-slate-500 mt-1 uppercase font-bold">
-                             <span>Muito Leve</span>
-                             <span>Falha Total</span>
-                          </div>
-                       </div>
-
-                       <div className="mb-4">
-                          <label className="text-xs font-bold text-slate-400 uppercase mb-2 block">Notas do Treino de Hoje</label>
-                          <textarea
-                             value={dailyNotes}
-                             onChange={(e) => setDailyNotes(e.target.value)}
-                             placeholder="Ex: Senti dor no ombro no supino. Aumentei carga no agachamento. Treino foi intenso."
-                             className="w-full bg-slate-950 border border-slate-800 rounded-lg p-3 text-white text-sm outline-none focus:border-blue-500 min-h-[80px]"
-                          />
-                       </div>
-
-                       <button 
-                         onClick={handleDailyFeedback}
-                         className="w-full py-2 bg-blue-600 hover:bg-blue-500 text-white font-bold rounded-lg transition-all shadow-lg shadow-blue-900/20 text-sm flex items-center justify-center gap-2"
-                       >
-                         <Save size={16} /> SALVAR FEEDBACK DIÁRIO
-                       </button>
-                    </Card>
-
-                    {/* Lista de Exercícios */}
-                    <div className="space-y-4">
-                       {state.workoutPlan.days.map((day, idx) => (
-                          <Card key={idx} className="overflow-hidden">
-                             <div className="bg-slate-800/50 p-3 border-b border-slate-700 flex items-center gap-2">
-                                <CalendarDays size={18} className="text-slate-400" />
-                                <h3 className="font-bold text-white">{day.title}</h3>
-                             </div>
-                             <div className="divide-y divide-slate-800">
-                                {day.exercises.map((ex, exIdx) => {
-                                   const lastLog = state.exerciseLogs
-                                      .filter(l => l.exerciseName === ex.name)
-                                      .sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime())[0];
-
-                                   return (
-                                      <div key={exIdx} className="p-4 hover:bg-slate-800/30 transition-colors">
-                                         <div className="flex justify-between items-start mb-2">
-                                            <span className="font-bold text-slate-200">{ex.name}</span>
-                                            <span className="text-xs font-mono bg-slate-950 px-2 py-1 rounded text-emerald-400 border border-emerald-900/30 whitespace-nowrap">
-                                               {ex.sets} x {ex.reps}
-                                            </span>
-                                         </div>
-                                         <div className="flex flex-col gap-2">
-                                            <div className="flex items-center gap-4 text-xs text-slate-500">
-                                               <span className="flex items-center gap-1"><Clock size={12} /> {ex.rest}</span>
-                                               {ex.tips && <span className="text-slate-400 italic truncate">💡 {ex.tips}</span>}
-                                            </div>
-                                            
-                                            {/* Sistema de Carga */}
-                                            <div className="flex items-center gap-2 mt-2 bg-slate-950/50 p-2 rounded-lg border border-slate-800">
-                                               <div className="flex-1 flex flex-col justify-center">
-                                                  <label className="text-[10px] text-slate-500 uppercase font-bold">Carga (KG)</label>
-                                                  <input 
-                                                     type="number" 
-                                                     placeholder={lastLog ? `${lastLog.weight}kg` : "0"}
-                                                     value={currentInputs[ex.name] || ''}
-                                                     onChange={(e) => setCurrentInputs(prev => ({...prev, [ex.name]: e.target.value}))}
-                                                     className="bg-transparent text-white font-mono outline-none w-full"
-                                                  />
-                                               </div>
-                                               <button 
-                                                  onClick={() => handleSaveLoad(ex.name)}
-                                                  className="bg-emerald-600 hover:bg-emerald-500 text-white p-2 rounded-md transition-colors"
-                                                  title="Salvar Carga"
-                                               >
-                                                  <Save size={16} />
-                                               </button>
-                                            </div>
-                                            {lastLog && (
-                                               <div className="text-[10px] text-slate-500 flex items-center gap-1">
-                                                  <LineChart size={10} /> Última: {lastLog.weight}kg em {new Date(lastLog.date).toLocaleDateString()}
-                                               </div>
-                                            )}
-                                         </div>
-                                      </div>
-                                   );
-                                })}
-                             </div>
-                          </Card>
-                       ))}
-                    </div>
-
-                    <Card className="p-6 border-blue-900/30 bg-blue-950/5">
-                       <h3 className="text-lg font-bold text-white mb-2 flex items-center gap-2">
-                          <TrendingUp className="text-blue-500" /> Evolução Inteligente
-                       </h3>
-                       <p className="text-xs text-slate-400 mb-4">
-                          A IA analisará seus registros de carga e feedback diário para sugerir a próxima fase.
-                       </p>
-                       
-                       <textarea
-                          value={workoutFeedback}
-                          onChange={(e) => setWorkoutFeedback(e.target.value)}
-                          placeholder="Feedback extra para a evolução (opcional)..."
-                          className="w-full bg-slate-950 border border-slate-800 rounded-lg p-3 text-white text-sm mb-4 outline-none focus:border-blue-500 min-h-[60px]"
-                       />
-
-                       <button 
-                         onClick={handleEvolveWorkout}
-                         disabled={isGeneratingWorkout}
-                         className="w-full py-3 bg-blue-600 hover:bg-blue-500 text-white font-bold rounded-lg transition-all shadow-lg shadow-blue-900/20 disabled:opacity-50 flex items-center justify-center gap-2"
-                       >
-                         {isGeneratingWorkout ? (
-                            <><RefreshCw className="animate-spin" /> EVOLUINDO...</>
-                         ) : (
-                            <><Zap size={18} fill="currentColor" /> GERAR NOVO CICLO</>
-                         )}
-                       </button>
-                    </Card>
-                 </div>
-               )}
-             </div>
-          )}
-
-          {activeTab === 'tools' && (
-             <div className="space-y-6 animate-in fade-in slide-in-from-right-8 duration-300">
-               <div className="flex justify-center gap-2 bg-slate-900 p-1 rounded-xl mb-4">
-                  <button onClick={() => setActiveTool('pomodoro')} className={`flex-1 py-2 rounded-lg text-xs font-bold ${activeTool === 'pomodoro' ? 'bg-slate-800 text-white' : 'text-slate-500'}`}>POMODORO</button>
-                  <button onClick={() => setActiveTool('alarm')} className={`flex-1 py-2 rounded-lg text-xs font-bold ${activeTool === 'alarm' ? 'bg-slate-800 text-white' : 'text-slate-500'}`}>ALARMES</button>
-                  <button onClick={() => setActiveTool('stopwatch')} className={`flex-1 py-2 rounded-lg text-xs font-bold ${activeTool === 'stopwatch' ? 'bg-slate-800 text-white' : 'text-slate-500'}`}>CRONÔMETRO</button>
-               </div>
-
-               {activeTool === 'pomodoro' && (
-                 <Card className="p-8 flex flex-col items-center justify-center text-center">
-                    <div className="text-6xl font-black font-mono text-white mb-8 tracking-widest">
-                       {formatTime(pomoTime)}
-                    </div>
-                    
-                    <div className="flex gap-2 mb-8">
-                       <button onClick={() => setPomodoroMode('focus')} className={`px-4 py-2 rounded-full text-xs font-bold ${pomoMode === 'focus' ? 'bg-emerald-500 text-white' : 'bg-slate-800 text-slate-400'}`}>FOCO</button>
-                       <button onClick={() => setPomodoroMode('short')} className={`px-4 py-2 rounded-full text-xs font-bold ${pomoMode === 'short' ? 'bg-blue-500 text-white' : 'bg-slate-800 text-slate-400'}`}>PAUSA CURTA</button>
-                       <button onClick={() => setPomodoroMode('long')} className={`px-4 py-2 rounded-full text-xs font-bold ${pomoMode === 'long' ? 'bg-purple-500 text-white' : 'bg-slate-800 text-slate-400'}`}>PAUSA LONGA</button>
-                    </div>
-
-                    <div className="flex gap-4">
-                       <button onClick={togglePomodoro} className="w-16 h-16 rounded-full bg-white text-slate-900 flex items-center justify-center hover:scale-110 transition-transform">
-                          {pomoIsActive ? <Pause fill="currentColor" /> : <Play fill="currentColor" className="ml-1" />}
-                       </button>
-                       <button onClick={resetPomodoro} className="w-16 h-16 rounded-full bg-slate-800 text-white flex items-center justify-center hover:bg-slate-700 transition-colors">
-                          <RotateCcw size={20} />
-                       </button>
-                    </div>
-                 </Card>
-               )}
-
-               {activeTool === 'alarm' && (
-                 <div className="space-y-4">
-                    <Card className="p-4 flex items-center gap-4">
-                       <input 
-                         type="time" 
-                         value={newAlarmTime}
-                         onChange={(e) => setNewAlarmTime(e.target.value)}
-                         className="bg-slate-950 border border-slate-800 rounded-lg p-3 text-white outline-none focus:border-emerald-500 flex-1"
-                       />
-                       <button onClick={addAlarm} className="bg-emerald-600 text-white p-3 rounded-lg font-bold">
-                          <Plus />
-                       </button>
-                    </Card>
-
-                    {state.alarms.map(alarm => (
-                       <Card key={alarm.id} className="p-4 flex items-center justify-between">
-                          <div className="flex items-center gap-4">
-                             <div className={`p-3 rounded-full ${alarm.active ? 'bg-emerald-500/20 text-emerald-400' : 'bg-slate-800 text-slate-600'}`}>
-                                <AlarmClock size={24} />
-                             </div>
-                             <span className={`text-2xl font-mono font-bold ${alarm.active ? 'text-white' : 'text-slate-600'}`}>
-                                {alarm.time}
-                             </span>
-                          </div>
-                          <div className="flex gap-2">
-                             <button onClick={() => toggleAlarm(alarm.id)} className={`p-2 rounded-lg ${alarm.active ? 'text-emerald-400' : 'text-slate-600'}`}>
-                                {alarm.active ? <ToggleRight size={24} /> : <ToggleLeft size={24} />}
-                             </button>
-                             <button onClick={() => deleteAlarm(alarm.id)} className="text-red-400 p-2">
-                                <Trash2 size={20} />
-                             </button>
-                          </div>
-                       </Card>
-                    ))}
-                 </div>
-               )}
-
-               {activeTool === 'stopwatch' && (
-                 <Card className="p-8 flex flex-col items-center justify-center text-center">
-                    <div className="text-6xl font-black font-mono text-white mb-8 tracking-widest">
-                       {formatStopwatch(swTime)}
-                    </div>
-                    <div className="flex gap-4">
-                       <button onClick={toggleStopwatch} className={`w-16 h-16 rounded-full flex items-center justify-center hover:scale-110 transition-transform ${swIsActive ? 'bg-red-500 text-white' : 'bg-emerald-500 text-white'}`}>
-                          {swIsActive ? <Pause fill="currentColor" /> : <Play fill="currentColor" className="ml-1" />}
-                       </button>
-                       <button onClick={resetStopwatch} className="w-16 h-16 rounded-full bg-slate-800 text-white flex items-center justify-center hover:bg-slate-700 transition-colors">
-                          <RotateCcw size={20} />
-                       </button>
-                    </div>
-                 </Card>
-               )}
-             </div>
-          )}
-
-          {activeTab === 'progress' && (
-            <div className="space-y-6 animate-in fade-in slide-in-from-right-8 duration-300">
-              <Card className="p-6">
-                <div className="flex items-center justify-between mb-6">
-                   <h2 className="text-xl font-bold text-white flex items-center gap-2">
-                      <ScanEye className="text-emerald-500" /> Scanner Corporal
-                   </h2>
-                   <label className="bg-emerald-600 hover:bg-emerald-500 text-white px-4 py-2 rounded-lg font-bold cursor-pointer transition-colors flex items-center gap-2">
-                      <Camera size={18} />
-                      <span className="text-xs">NOVA FOTO</span>
-                      <input 
-                         type="file" 
-                         ref={fileInputRef} 
-                         className="hidden" 
-                         accept="image/*"
-                         onChange={handleImageUpload}
-                      />
-                   </label>
+                  <div className={`max-w-[85%] p-4 rounded-2xl shadow-sm ${msg.role === 'user' ? 'bg-slate-800 text-white rounded-tr-none' : 'bg-slate-950 border border-slate-800 text-slate-300 rounded-tl-none'}`}>
+                    <MarkdownRenderer content={msg.text} accentColor={accentColor} />
+                  </div>
                 </div>
-
-                {/* Face Registration */}
-                <div className="mb-6 p-4 bg-slate-950/50 rounded-xl border border-slate-800">
-                   <div className="flex items-center justify-between">
-                      <div>
-                         <h3 className="text-sm font-bold text-slate-200">Registro de Identidade</h3>
-                         <p className="text-xs text-slate-500">Registre seu rosto para a IA saber quem avaliar nas fotos.</p>
-                      </div>
-                      <label className="text-xs font-bold text-blue-400 cursor-pointer hover:text-blue-300 flex items-center gap-1">
-                         <Upload size={12} /> {state.profile.facePhotoUrl ? "ATUALIZAR FACE" : "REGISTRAR FACE"}
-                         <input 
-                            type="file" 
-                            ref={faceInputRef}
-                            className="hidden" 
-                            accept="image/*"
-                            onChange={handleFaceUpload}
-                         />
-                      </label>
+              ))}
+              {loading && (
+                <div className="flex gap-4">
+                   <div className="w-10 h-10 rounded-full bg-slate-950 border border-slate-800 flex items-center justify-center shrink-0">
+                      <Bot size={20} className={accentColor.replace('bg-', 'text-')} />
                    </div>
-                   {state.profile.faceDescription && (
-                      <div className="mt-2 text-[10px] text-emerald-500/80 font-mono bg-emerald-950/20 p-2 rounded border border-emerald-900/30">
-                         ID CONFIRMADO: {state.profile.faceDescription}
-                      </div>
-                   )}
-                </div>
-
-                {isAnalyzingBody && (
-                   <div className="p-8 text-center text-emerald-400 animate-pulse">
-                      <ScanEye size={48} className="mx-auto mb-4" />
-                      <p className="font-bold">ANALISANDO BIOMETRIA E SIMETRIA...</p>
+                   <div className="bg-slate-950 border border-slate-800 p-4 rounded-2xl rounded-tl-none flex items-center gap-2">
+                      <div className="w-2 h-2 bg-slate-600 rounded-full animate-bounce"></div>
+                      <div className="w-2 h-2 bg-slate-600 rounded-full animate-bounce delay-75"></div>
+                      <div className="w-2 h-2 bg-slate-600 rounded-full animate-bounce delay-150"></div>
                    </div>
-                )}
-
-                <div className="space-y-4">
-                   {state.progressLogs.map(log => (
-                      <Card key={log.id} className="overflow-hidden">
-                         <div className="relative h-48 bg-slate-950">
-                            <img src={log.imageUrl} alt="Progress" className="w-full h-full object-cover opacity-50 hover:opacity-100 transition-opacity" />
-                            <div className="absolute bottom-0 left-0 right-0 p-2 bg-gradient-to-t from-slate-900 to-transparent">
-                               <span className="text-xs font-bold text-white bg-slate-900/80 px-2 py-1 rounded">
-                                  {new Date(log.date).toLocaleDateString()}
-                               </span>
-                            </div>
-                            <button 
-                               onClick={() => deleteProgressEntry(log.id)}
-                               className="absolute top-2 right-2 p-2 bg-red-500/20 text-red-400 rounded-full hover:bg-red-500 hover:text-white transition-colors"
-                            >
-                               <Trash2 size={16} />
-                            </button>
-                         </div>
-                         <div className="p-4 bg-slate-900/50">
-                            <p className="text-sm text-slate-300 whitespace-pre-line leading-relaxed">{log.analysis}</p>
-                         </div>
-                      </Card>
-                   ))}
                 </div>
-              </Card>
+              )}
+              <div ref={chatBottomRef} />
+           </div>
+           <div className="p-4 bg-slate-950 border-t border-slate-900 flex gap-2">
+              <input 
+                value={input}
+                onChange={e => setInput(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && handleChat()}
+                placeholder="Ex: Como melhorar meu agachamento?"
+                className="flex-1 bg-slate-900 border border-slate-800 rounded-lg p-3 text-white outline-none focus:border-slate-600"
+              />
+              <button onClick={handleChat} disabled={loading} className={`${accentColor} p-3 rounded-lg text-black hover:brightness-110 disabled:opacity-50 disabled:cursor-not-allowed`}>
+                <Send size={20} />
+              </button>
+           </div>
+        </div>
+      )}
+    </div>
+  );
+};
 
-              <Card className="p-6">
-                 <h2 className="text-xl font-bold text-white mb-4 flex items-center gap-2">
-                    <LineChart className="text-emerald-500" /> Estatísticas
-                 </h2>
-                 <StatsChart logs={state.logs} />
-              </Card>
+const DietView: React.FC<{ accentColor: string, onShowToast: (msg: string) => void }> = ({ accentColor, onShowToast }) => {
+  const [likes, setLikes] = useState('');
+  const [pantry, setPantry] = useState('');
+  const [goal, setGoal] = useState('Perder Peso (Definição)');
+  const [budget, setBudget] = useState('');
+  const [additionalInfo, setAdditionalInfo] = useState('');
+  const [plan, setPlan] = useState<DietPlan | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  const handleGenerate = async () => {
+    setLoading(true);
+    const result = await geminiService.generateDietPlan(goal, likes, pantry, budget, additionalInfo);
+    setPlan(result);
+    setLoading(false);
+    db.logActivity('diet_generated', 15);
+    onShowToast("+15 XP");
+  };
+
+  return (
+    <div className="max-w-3xl mx-auto">
+      <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-8">
+        <div className="flex items-center gap-4 mb-8">
+          <div className="p-3 bg-emerald-900/20 text-emerald-500 rounded-lg">
+            <Salad size={32} />
+          </div>
+          <div>
+            <h2 className="text-2xl font-bold text-white">Chef Inteligente</h2>
+            <p className="text-slate-400">Receitas baratas com o que você tem em casa.</p>
+          </div>
+        </div>
+
+        {!plan ? (
+          <div className="space-y-6">
+             <div>
+               <label className="text-xs text-slate-500 font-bold block mb-2 uppercase">Objetivo</label>
+               <select 
+                 value={goal}
+                 onChange={e => setGoal(e.target.value)}
+                 className="w-full bg-slate-950 border border-slate-800 rounded-lg p-4 text-white outline-none focus:border-emerald-500 transition-colors"
+               >
+                 <option>Perder Peso (Definição)</option>
+                 <option>Ganhar Massa (Bulking)</option>
+                 <option>Reeducação Alimentar</option>
+                 <option>Energia e Performance</option>
+               </select>
+             </div>
+
+             <div>
+                <label className="text-xs text-slate-500 font-bold block mb-2 uppercase">Informações Adicionais / Metas Específicas</label>
+                <textarea 
+                  value={additionalInfo}
+                  onChange={e => setAdditionalInfo(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-lg p-4 text-white outline-none min-h-[80px] focus:border-emerald-500 transition-colors"
+                  placeholder="Ex: Quero perder 20kg de gordura, ganhar 5kg de massa magra, sou alérgico a camarão..."
+                />
+             </div>
+
+             <div>
+               <label className="text-xs text-slate-500 font-bold block mb-2 uppercase">O que você gosta de comer?</label>
+               <textarea 
+                  value={likes}
+                  onChange={e => setLikes(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-lg p-4 text-white outline-none min-h-[100px] focus:border-emerald-500 transition-colors"
+                  placeholder="Ex: Frango, ovo, batata doce, aveia, banana..."
+               />
+             </div>
+             
+             <div>
+               <label className="text-xs text-slate-500 font-bold block mb-2 uppercase">O que tem na sua despensa agora?</label>
+               <textarea 
+                  value={pantry}
+                  onChange={e => setPantry(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-lg p-4 text-white outline-none min-h-[100px] focus:border-emerald-500 transition-colors"
+                  placeholder="Ex: Arroz, feijão, macarrão, alguns ovos, cenoura..."
+               />
+             </div>
+
+             <div>
+               <label className="text-xs text-slate-500 font-bold block mb-2 uppercase">Orçamento Limite (Opcional)</label>
+               <div className="relative">
+                 <span className="absolute left-4 top-4 text-slate-500 font-bold">R$</span>
+                 <input 
+                    value={budget}
+                    type="number"
+                    onChange={e => setBudget(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-lg p-4 pl-12 text-white outline-none focus:border-emerald-500 transition-colors"
+                    placeholder="Ex: 20"
+                 />
+               </div>
+             </div>
+
+             <button 
+               onClick={handleGenerate}
+               disabled={loading}
+               className={`w-full ${accentColor} text-black font-bold py-4 rounded-xl hover:brightness-110 transition-all flex items-center justify-center gap-2`}
+             >
+               {loading ? (
+                  <>
+                    <div className="w-5 h-5 border-2 border-black border-t-transparent rounded-full animate-spin"></div>
+                    CALCULANDO MACROS...
+                  </>
+               ) : (
+                  <>
+                    <Utensils size={20} /> GERAR PLANO ALIMENTAR
+                  </>
+               )}
+             </button>
+          </div>
+        ) : (
+          <div>
+             <div className="flex justify-between items-center mb-6">
+                <div>
+                   <h3 className="text-xl font-bold text-white">Plano Sugerido</h3>
+                   <div className="flex items-center gap-2 mt-1">
+                      <span className="text-xs bg-slate-800 text-emerald-400 px-2 py-1 rounded border border-slate-700">~{plan.calories} kcal</span>
+                      <span className="text-xs bg-slate-800 text-slate-400 px-2 py-1 rounded border border-slate-700">{goal}</span>
+                   </div>
+                </div>
+                <button onClick={() => setPlan(null)} className="text-xs text-slate-400 hover:text-white transition-colors">REFAZER</button>
+             </div>
+             <div className="grid gap-4">
+               {plan.meals.map((meal, i) => (
+                 <div key={i} className="bg-slate-950 p-4 rounded-xl border border-slate-800 flex flex-col md:flex-row justify-between items-start md:items-center hover:border-slate-700 transition-colors">
+                    <div className="mb-2 md:mb-0">
+                      <h4 className="font-bold text-emerald-400 mb-1">{meal.name}</h4>
+                    </div>
+                    <div className="flex flex-wrap gap-2 justify-end">
+                      {meal.items.map((item, j) => (
+                        <span key={j} className="text-xs bg-slate-900 text-slate-300 px-3 py-1.5 rounded-lg border border-slate-800">{item}</span>
+                      ))}
+                    </div>
+                 </div>
+               ))}
+             </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+const StatsView: React.FC<{ user: UserProfile, accentColor: string }> = ({ user, accentColor }) => {
+  const data = [
+    { name: 'Seg', val: 40 },
+    { name: 'Ter', val: 60 },
+    { name: 'Qua', val: 30 },
+    { name: 'Qui', val: 80 },
+    { name: 'Sex', val: 90 },
+    { name: 'Sab', val: 50 },
+    { name: 'Dom', val: 70 },
+  ];
+
+  return (
+    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+      <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-6">
+        <h3 className="text-xl font-bold text-white mb-6 flex items-center gap-2">
+          <UserIcon size={20} /> Scanner Corporal
+        </h3>
+        <div className="aspect-square bg-slate-950 rounded-xl relative overflow-hidden border border-slate-800 flex items-center justify-center group cursor-pointer">
+           <div className="absolute inset-0 bg-[url('https://images.unsplash.com/photo-1517836357463-d25dfeac3438?q=80&w=1000&auto=format&fit=crop')] bg-cover bg-center opacity-20 grayscale group-hover:opacity-40 transition-opacity"></div>
+           <div className={`w-full h-1 ${accentColor} absolute top-0 animate-[scan_2s_ease-in-out_infinite] shadow-[0_0_20px_rgba(16,185,129,0.5)]`}></div>
+           <button className={`relative z-10 ${accentColor} text-black font-bold px-6 py-2 rounded-lg`}>NOVA FOTO</button>
+        </div>
+      </div>
+
+      <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-6 flex flex-col">
+         <h3 className="text-xl font-bold text-white mb-6">Consistência</h3>
+         <div className="flex-1 w-full h-64">
+           <ResponsiveContainer width="100%" height="100%">
+             <BarChart data={data}>
+               <XAxis dataKey="name" stroke="#475569" fontSize={12} tickLine={false} axisLine={false} />
+               <Tooltip 
+                 contentStyle={{ backgroundColor: '#0f172a', border: '1px solid #1e293b', borderRadius: '8px' }}
+                 itemStyle={{ color: '#fff' }}
+                 cursor={{fill: 'rgba(255,255,255,0.05)'}}
+               />
+               <Bar dataKey="val" radius={[4, 4, 0, 0]}>
+                 {data.map((entry, index) => (
+                   <Cell key={`cell-${index}`} fill={entry.val > 70 ? (accentColor.includes('emerald') ? '#10b981' : '#ef4444') : '#334155'} />
+                 ))}
+               </Bar>
+             </BarChart>
+           </ResponsiveContainer>
+         </div>
+      </div>
+    </div>
+  );
+};
+
+const LeaderboardView: React.FC = () => {
+  const [leaders, setLeaders] = useState<LeaderboardEntry[]>([]);
+
+  useEffect(() => {
+    setLeaders(db.getLeaderboard());
+  }, []);
+
+  return (
+    <div className="max-w-3xl mx-auto">
+      <h2 className="text-2xl font-bold text-white mb-6 flex items-center gap-2"><Trophy className="text-yellow-500" /> Classificação Global</h2>
+      <div className="bg-slate-900/80 border border-slate-800 rounded-2xl overflow-hidden">
+        <table className="w-full text-left">
+          <thead className="bg-slate-950 text-slate-400 text-xs uppercase font-bold">
+            <tr>
+              <th className="p-4">Rank</th>
+              <th className="p-4">Agente</th>
+              <th className="p-4">Nível</th>
+              <th className="p-4">Streak</th>
+              <th className="p-4">Modo</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-800">
+            {leaders.map((l, i) => (
+              <tr key={i} className="hover:bg-slate-800/50 transition-colors">
+                <td className="p-4 font-mono text-slate-500">#{i + 1}</td>
+                <td className="p-4 font-bold text-white">{l.name}</td>
+                <td className="p-4 text-emerald-400 font-bold">LVL {l.level}</td>
+                <td className="p-4 text-orange-500 font-mono">{l.streak} dias</td>
+                <td className="p-4">
+                  <span className={`text-[10px] px-2 py-1 rounded border ${l.mode === 'Hardcore' ? 'border-red-900 bg-red-900/20 text-red-500' : 'border-blue-900 bg-blue-900/20 text-blue-500'}`}>
+                    {l.mode.toUpperCase()}
+                  </span>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+};
+
+const MotivationView: React.FC<{ isHardcore: boolean, toggleHardcore: () => void }> = ({ isHardcore, toggleHardcore }) => {
+  return (
+    <div className="max-w-2xl mx-auto space-y-8">
+      <div className={`p-8 rounded-2xl border transition-all duration-500 ${isHardcore ? 'bg-red-950/20 border-red-900/50' : 'bg-slate-900 border-slate-800'}`}>
+         <h2 className={`text-3xl font-bold mb-4 ${isHardcore ? 'text-red-500' : 'text-white'}`}>
+           {isHardcore ? "MODO HARDCORE ATIVO" : "MODO NORMAL"}
+         </h2>
+         <p className="text-slate-400 mb-8">
+           {isHardcore 
+             ? "Falhas punem o dobro de XP. A voz da IA é agressiva. Apenas para quem aguenta a pressão. O design reflete o estado de guerra."
+             : "Equilíbrio entre vida e progresso. A IA é uma mentora. Falhas são oportunidades de aprendizado."
+           }
+         </p>
+         
+         <div className="flex items-center gap-4">
+           <span className="text-sm font-bold text-slate-500">NORMAL</span>
+           <button 
+             onClick={toggleHardcore}
+             className={`w-16 h-8 rounded-full p-1 transition-colors ${isHardcore ? 'bg-red-600' : 'bg-slate-700'}`}
+           >
+             <div className={`w-6 h-6 rounded-full bg-white shadow-lg transform transition-transform ${isHardcore ? 'translate-x-8' : 'translate-x-0'}`}></div>
+           </button>
+           <span className="text-sm font-bold text-red-500">HARDCORE</span>
+         </div>
+      </div>
+
+      <div className="bg-slate-900 p-8 rounded-2xl border border-slate-800 text-center">
+         <h3 className="text-xs font-bold text-slate-500 mb-4">REALITY CHECK DIÁRIO</h3>
+         <p className="text-2xl font-serif italic text-white">
+           "A mediocridade é uma escolha que você está fazendo agora."
+         </p>
+      </div>
+    </div>
+  );
+};
+
+const ProfileView: React.FC<{ user: UserProfile, onUpdateUser: (u: Partial<UserProfile>) => void, accentColor: string }> = ({ user, onUpdateUser, accentColor }) => {
+  const [name, setName] = useState(user.name);
+  const [email, setEmail] = useState(user.email);
+  const [hasChanges, setHasChanges] = useState(false);
+
+  useEffect(() => {
+    setHasChanges(name !== user.name || email !== user.email);
+  }, [name, email, user]);
+
+  const handleSave = () => {
+    onUpdateUser({ name, email });
+    setHasChanges(false);
+  };
+
+  const isThemeUnlocked = (key: string) => {
+    if (key === 'emerald') return true;
+    if (key === 'rose' && user.isHardcore) return true;
+    const inventory = user.inventory || [];
+    return inventory.includes(`theme_${key}`);
+  };
+
+  return (
+    <div className="max-w-2xl mx-auto">
+      <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-8 mb-6">
+        <div className="flex items-center gap-6 mb-8">
+          <div className={`w-20 h-20 rounded-full ${accentColor} flex items-center justify-center text-black font-bold text-3xl shadow-xl`}>
+             {user.name.charAt(0)}
+          </div>
+          <div>
+            <h2 className="text-2xl font-bold text-white">{user.name}</h2>
+            <p className="text-slate-400">{user.email}</p>
+            <div className={`inline-block px-3 py-1 rounded text-xs font-bold mt-2 ${user.isHardcore ? 'bg-red-900/20 text-red-500' : 'bg-emerald-900/20 text-emerald-500'}`}>
+              {user.isHardcore ? 'HARDCORE AGENT' : 'STANDARD AGENT'}
             </div>
-          )}
+          </div>
+        </div>
 
-          {activeTab === 'rewards' && (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 animate-in fade-in slide-in-from-right-8 duration-300">
-               {REWARDS.map(reward => {
-                  const missingPoints = Math.max(0, reward.cost - state.points);
-                  const canAfford = state.points >= reward.cost;
-                  
+        <div className="space-y-6">
+           <div>
+             <h3 className="text-sm font-bold text-slate-500 mb-4 flex items-center gap-2"><Palette size={16} /> PERSONALIZAÇÃO DE INTERFACE</h3>
+             <div className="grid grid-cols-3 sm:grid-cols-6 gap-4">
+                {Object.entries(THEMES).map(([key, theme]) => {
+                  const unlocked = isThemeUnlocked(key);
                   return (
-                    <Card key={reward.id} className="p-6 flex items-center justify-between border-slate-800 hover:border-emerald-500/50 transition-colors group">
-                       <div className="flex items-center gap-4">
-                          <div className="text-4xl group-hover:scale-110 transition-transform">{reward.icon}</div>
-                          <div>
-                             <h3 className="font-bold text-white text-lg">{reward.label}</h3>
-                             <span className={`text-sm font-bold ${canAfford ? 'text-emerald-400' : 'text-slate-500'}`}>{reward.cost} PTS</span>
-                             {!canAfford && (
-                                <div className="text-[10px] font-bold text-red-400 mt-1">
-                                   Faltam {missingPoints} PTS
-                                </div>
-                             )}
-                          </div>
-                       </div>
-                       <button 
-                          onClick={() => handleRedeem(reward)}
-                          disabled={!canAfford}
-                          className={`px-4 py-2 rounded-lg font-bold transition-all text-xs ${
-                             canAfford 
-                             ? 'bg-emerald-600 text-white hover:bg-emerald-500 shadow-lg shadow-emerald-900/20' 
-                             : 'bg-slate-800 text-slate-500 cursor-not-allowed border border-slate-700'
-                          }`}
-                       >
-                          {canAfford ? 'RESGATAR' : 'PONTOS INSUFICIENTES'}
-                       </button>
-                    </Card>
+                    <button
+                      key={key}
+                      onClick={() => unlocked && onUpdateUser({ themeColor: key })}
+                      className={`h-12 rounded-xl transition-all relative group flex items-center justify-center
+                        ${theme.bg} 
+                        ${user.themeColor === key ? 'ring-2 ring-white ring-offset-2 ring-offset-slate-900 scale-105' : ''}
+                        ${!unlocked ? 'opacity-30 cursor-not-allowed grayscale' : 'hover:scale-105 opacity-70 hover:opacity-100'}
+                      `}
+                      title={unlocked ? theme.name : `Bloqueado: ${theme.name}`}
+                    >
+                      {user.themeColor === key && (
+                        <div className="absolute inset-0 flex items-center justify-center">
+                          <CheckCircle2 size={20} className="text-black" />
+                        </div>
+                      )}
+                      {!unlocked && (
+                         <Lock size={16} className="text-black/50" />
+                      )}
+                    </button>
                   );
-               })}
+                })}
+             </div>
+             <p className="text-xs text-slate-500 mt-2">Novos temas disponíveis na Loja.</p>
+           </div>
+
+           <div className="h-px bg-slate-800"></div>
+
+           <div>
+              <div className="flex justify-between items-center mb-4">
+                  <h3 className="text-sm font-bold text-slate-500 flex items-center gap-2"><Settings size={16} /> DADOS DA CONTA</h3>
+                  {hasChanges && (
+                      <button 
+                        onClick={handleSave}
+                        className={`text-xs ${accentColor} text-black font-bold px-3 py-1 rounded-lg hover:brightness-110 transition-all animate-pulse`}
+                      >
+                        SALVAR ALTERAÇÕES
+                      </button>
+                  )}
+              </div>
+              <div className="space-y-4">
+                <div>
+                   <label className="text-xs text-slate-500 block mb-1">CODINOME</label>
+                   <input 
+                      value={name}
+                      onChange={(e) => setName(e.target.value)}
+                      className="w-full bg-slate-950 border border-slate-800 rounded-lg p-3 text-white focus:border-slate-600 outline-none transition-colors"
+                   />
+                </div>
+                 <div>
+                   <label className="text-xs text-slate-500 block mb-1">EMAIL DE ACESSO</label>
+                   <input 
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                      className="w-full bg-slate-950 border border-slate-800 rounded-lg p-3 text-white focus:border-slate-600 outline-none transition-colors"
+                   />
+                </div>
+              </div>
+           </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// --- Main App Component ---
+
+const App: React.FC = () => {
+  const [user, setUser] = useState<UserProfile | null>(null);
+  const [activeTab, setActiveTab] = useState<Tab>(Tab.MISSIONS);
+  const [dailyBriefing, setDailyBriefing] = useState<string | null>(null);
+  
+  // State for visual feedback
+  const [showLevelUp, setShowLevelUp] = useState(false);
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+
+  const refreshUser = () => {
+    const currentUser = db.getCurrentUser();
+    if (currentUser) {
+      setUser(currentUser);
+      
+      // Generate daily briefing if not already shown
+      if (!dailyBriefing) {
+        geminiService.generateDailyMotivation(currentUser).then(setDailyBriefing);
+      }
+    }
+  };
+  
+  useEffect(() => {
+    refreshUser();
+  }, []);
+
+  const triggerToast = (msg: string) => {
+    setToastMessage(msg);
+    setTimeout(() => setToastMessage(null), 3000);
+  };
+
+  const handleUpdateUser = (updates: Partial<UserProfile>) => {
+    if (!user) return;
+    const oldLevel = user.level;
+    const updated = db.updateUser(updates);
+    
+    if (updated) {
+      setUser(updated);
+      // Check for level up
+      if (updated.level > oldLevel) {
+        setShowLevelUp(true);
+      }
+    }
+  };
+
+  const handleLogout = () => {
+    db.logout();
+    setUser(null);
+    setDailyBriefing(null);
+  };
+
+  const toggleHardcore = () => {
+    if (user) {
+      // If toggling to Hardcore, and user hasn't set a custom color (still using default), maybe switch to Rose?
+      // For simplicity, we just toggle the mode. The user can customize color separately.
+      handleUpdateUser({ isHardcore: !user.isHardcore });
+    }
+  };
+
+  if (!user) {
+    return <AuthScreen onLogin={refreshUser} />;
+  }
+
+  // Determine Colors based on User Preference
+  const currentThemeKey = user.themeColor || (user.isHardcore ? 'rose' : 'emerald');
+  const theme = THEMES[currentThemeKey] || THEMES.emerald;
+  const accentColor = theme.bg;
+  const accentText = theme.text;
+
+  return (
+    <div className={`min-h-screen bg-[#050511] font-sans selection:bg-emerald-500 selection:text-black overflow-hidden flex`}>
+      {toastMessage && <ToastNotification message={toastMessage} accentColor={accentColor} />}
+      {showLevelUp && <LevelUpModal level={user.level} onClose={() => setShowLevelUp(false)} accentColor={accentColor} />}
+
+      <Sidebar 
+        activeTab={activeTab} 
+        setActiveTab={setActiveTab} 
+        accentColor={accentColor}
+        isHardcore={user.isHardcore}
+      />
+      
+      <div className="flex-1 ml-64 flex flex-col h-screen">
+        <TopBar user={user} accentColor={accentColor} accentText={accentText} />
+        
+        <main className="flex-1 overflow-y-auto p-8 relative">
+          {/* Background Ambient Glow */}
+          <div 
+             className={`fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[800px] h-[800px] blur-[120px] rounded-full pointer-events-none -z-10 transition-colors duration-1000 opacity-10`}
+             style={{ backgroundColor: theme.hex }}
+          ></div>
+
+          <div className="absolute top-4 right-4 z-20">
+            <button onClick={handleLogout} className="p-2 text-slate-500 hover:text-white rounded-full hover:bg-slate-800 transition-all" title="Logout">
+              <LogOut size={20} />
+            </button>
+          </div>
+
+          {dailyBriefing && activeTab === Tab.MISSIONS && (
+            <div className={`mb-6 p-4 rounded-xl border flex items-start gap-3 bg-slate-950/20 border-slate-900/50`}>
+               <BrainCircuit className={accentText} size={24} />
+               <div>
+                 <h4 className={`text-sm font-bold ${accentText} mb-1`}>IA DO QG</h4>
+                 <p className="text-slate-300 italic text-sm">"{dailyBriefing}"</p>
+               </div>
             </div>
           )}
 
-          {activeTab === 'profile' && renderProfileAndGoals()}
-          
-          {activeTab === 'motivation' && (
-             <div className="space-y-6 animate-in fade-in slide-in-from-right-8 duration-300">
-                <Card className="p-8 border-red-900/30 bg-red-950/5 relative overflow-hidden">
-                    <div className="absolute top-0 right-0 p-4 opacity-10">
-                        <Flame size={120} className="text-red-500" />
-                    </div>
-                    <div className="relative z-10">
-                        <h2 className="text-3xl font-black text-white italic tracking-tighter mb-2">ARSENAL MENTAL</h2>
-                        <p className="text-slate-400 mb-6">A mente falha antes do corpo. Fortaleça-a.</p>
-
-                        <div className="bg-slate-950 p-6 rounded-xl border border-slate-800 mb-6">
-                            <h3 className="text-xs font-bold text-red-500 uppercase mb-2 flex items-center gap-2">
-                                <Skull size={14} /> Reality Check Diário
-                            </h3>
-                            <p className="text-xl font-bold text-slate-200 font-serif italic">
-                                "{REALITY_CHECKS[Math.floor(Math.random() * REALITY_CHECKS.length)]}"
-                            </p>
-                        </div>
-
-                        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-6">
-                            <button 
-                                onClick={() => handleGenerateMotivation('roast')}
-                                disabled={isGeneratingMotivation}
-                                className="p-4 bg-slate-900 border border-slate-800 hover:border-red-500 hover:bg-red-950/20 rounded-xl transition-all group text-left"
-                            >
-                                <Skull className="text-slate-500 group-hover:text-red-500 mb-2" />
-                                <div className="font-bold text-slate-200">Choque de Realidade</div>
-                                <div className="text-[10px] text-slate-500">Para quando você estiver com preguiça.</div>
-                            </button>
-                            <button 
-                                onClick={() => handleGenerateMotivation('hype')}
-                                disabled={isGeneratingMotivation}
-                                className="p-4 bg-slate-900 border border-slate-800 hover:border-orange-500 hover:bg-orange-950/20 rounded-xl transition-all group text-left"
-                            >
-                                <Flame className="text-slate-500 group-hover:text-orange-500 mb-2" />
-                                <div className="font-bold text-slate-200">Pré-Guerra</div>
-                                <div className="text-[10px] text-slate-500">Energia pura antes do treino.</div>
-                            </button>
-                            <button 
-                                onClick={() => handleGenerateMotivation('focus')}
-                                disabled={isGeneratingMotivation}
-                                className="p-4 bg-slate-900 border border-slate-800 hover:border-blue-500 hover:bg-blue-950/20 rounded-xl transition-all group text-left"
-                            >
-                                <BrainCircuit className="text-slate-500 group-hover:text-blue-500 mb-2" />
-                                <div className="font-bold text-slate-200">Estoicismo</div>
-                                <div className="text-[10px] text-slate-500">Recalibrar o foco e propósito.</div>
-                            </button>
-                        </div>
-
-                        {motivationSpeech && (
-                            <div className="bg-slate-950/80 p-6 rounded-xl border border-slate-700 animate-in fade-in zoom-in-95 duration-300">
-                                <div className="flex justify-between items-start mb-4">
-                                    <div className="flex items-center gap-2">
-                                        <Bot className="text-emerald-500" />
-                                        <span className="text-xs font-bold text-emerald-500 uppercase">Transmissão do QG</span>
-                                    </div>
-                                    <button onClick={() => setMotivationSpeech('')} className="text-slate-600 hover:text-white"><XCircle size={16} /></button>
-                                </div>
-                                <p className="text-slate-300 whitespace-pre-line leading-relaxed font-medium">
-                                    {motivationSpeech}
-                                </p>
-                            </div>
-                        )}
-                    </div>
-                </Card>
-
-                <Card className="p-6 flex items-center justify-between border-slate-800 bg-slate-900/50">
-                     <div>
-                        <div className="flex items-center gap-2 mb-1">
-                            <h3 className="font-bold text-white">Modo Hardcore</h3>
-                            <span className="bg-red-500 text-white text-[10px] px-1.5 py-0.5 rounded font-bold uppercase">Risco Alto</span>
-                        </div>
-                        <p className="text-xs text-slate-500 max-w-md">
-                            A interface fica vermelha. Falhas punem o dobro de XP. A voz da IA se torna agressiva. Apenas para quem aguenta a pressão.
-                        </p>
-                     </div>
-                     <button 
-                        onClick={toggleHardcoreMode}
-                        className={`w-14 h-8 rounded-full transition-colors relative ${state.hardcoreMode ? 'bg-red-600' : 'bg-slate-700'}`}
-                     >
-                        <div className={`absolute top-1 left-1 bg-white w-6 h-6 rounded-full transition-transform ${state.hardcoreMode ? 'translate-x-6' : 'translate-x-0'}`} />
-                     </button>
-                </Card>
-             </div>
+          {activeTab === Tab.MISSIONS && (
+            <MissionsView 
+              user={user} 
+              onUpdateUser={handleUpdateUser} 
+              onShowToast={triggerToast}
+              accentColor={accentColor}
+            />
           )}
+
+          {activeTab === Tab.CHAT && (
+            <GeneralChatView 
+              user={user}
+              accentColor={accentColor}
+            />
+          )}
+          
+          {activeTab === Tab.TRAINING && (
+            <TrainingView 
+              accentColor={accentColor} 
+              user={user} 
+              onShowToast={triggerToast}
+            />
+          )}
+
+          {activeTab === Tab.MARTIAL_ARTS && (
+            <MartialArtsView 
+              accentColor={accentColor} 
+              user={user}
+              onShowToast={triggerToast}
+            />
+          )}
+          
+          {activeTab === Tab.DIET && (
+            <DietView 
+              accentColor={accentColor} 
+              onShowToast={triggerToast} 
+            />
+          )}
+          
+          {activeTab === Tab.TOOLS && <Tools accentColor={accentColor} />}
+          {activeTab === Tab.PROGRESS && <StatsView user={user} accentColor={accentColor} />}
+          {activeTab === Tab.LEADERBOARD && <LeaderboardView />}
+          {activeTab === Tab.MOTIVATION && <MotivationView isHardcore={user.isHardcore} toggleHardcore={toggleHardcore} />}
+          
+          {activeTab === Tab.PROFILE && (
+            <ProfileView user={user} onUpdateUser={handleUpdateUser} accentColor={accentColor} />
+          )}
+
+          {activeTab === Tab.SHOP && (
+            <ShopView 
+              user={user} 
+              onUpdateUser={handleUpdateUser} 
+              accentColor={accentColor} 
+              onShowToast={triggerToast}
+            />
+          )}
+
         </main>
       </div>
     </div>

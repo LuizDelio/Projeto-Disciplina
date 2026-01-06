@@ -1,7 +1,8 @@
 {
-  "name": "Protocolo de Disciplina",
-  "description": "Um rastreador de hábitos gamificado de alto risco inspirado em princípios de disciplina hardcore. Rastreie missões, ganhe recompensas ou enfrente as consequências.",
+  "name": "Disciplina AI",
+  "description": "A gamified self-improvement platform with AI coaching, hardcore mode, and progress tracking.",
   "requestFramePermissions": [
+    "camera",
     "microphone"
   ]
 }

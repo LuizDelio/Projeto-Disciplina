@@ -1,136 +1,103 @@
 
-export interface Mission {
+export interface ActivityLog {
   id: string;
-  label: string;
-  points: number;
-  isCustom?: boolean;
+  date: string; // ISO Date
+  type: 'login' | 'mission_complete' | 'training' | 'diet_generated' | 'martial_arts';
+  details?: string;
+  xpEarned: number;
 }
-
-export interface DailyLog {
-  date: string; // ISO Date string YYYY-MM-DD
-  missionId: string;
-  status: 'completed' | 'failed';
-  pointsChange: number;
-}
-
-export type AiTone = 'brutal' | 'mentor' | 'scientist';
 
 export interface UserProfile {
+  id: string;
   name: string;
-  age: string;
-  weight: string;
-  height: string;
-  tone: AiTone;
-  facePhotoUrl?: string; // Foto do rosto em Base64
-  faceDescription?: string; // Descrição gerada pela IA para reconhecimento
+  email: string;
+  password?: string; // Simulating auth
+  provider: 'email' | 'google';
+  birthDate?: string; // For age verification
+  level: number;
+  xp: number;
+  streak: number;
+  lastLogin: string; // ISO Date
+  coins: number;
+  isHardcore: boolean;
+  themeColor: string; // New field for UI customization
+  inventory: string[];
+  stats: {
+    strength: number;
+    discipline: number;
+    intelligence: number;
+  };
+  history: ActivityLog[];
 }
 
-export interface Goal {
+export interface Mission {
   id: string;
-  label: string;
+  title: string;
+  xp: number;
   completed: boolean;
-  rewardPoints: number;
+  type: 'daily' | 'one-time';
 }
 
-export interface ProgressEntry {
-  id: string;
-  date: string;
-  imageUrl: string;
-  analysis: string;
-}
-
-export interface Alarm {
-  id: string;
-  time: string; // HH:mm
-  label: string;
-  active: boolean;
-}
-
-export interface Exercise {
+export interface LeaderboardEntry {
   name: string;
-  sets: string;
-  reps: string;
-  rest: string;
-  tips: string;
+  level: number;
+  streak: number;
+  mode: 'Normal' | 'Hardcore';
 }
 
-export interface WorkoutDay {
-  title: string; // Ex: Treino A - Peito
-  exercises: Exercise[];
+export enum Tab {
+  MISSIONS = 'missions',
+  TRAINING = 'training',
+  MARTIAL_ARTS = 'martial_arts',
+  DIET = 'diet',
+  TOOLS = 'tools',
+  PROGRESS = 'progress',
+  SHOP = 'shop',
+  PROFILE = 'profile',
+  MOTIVATION = 'motivation',
+  LEADERBOARD = 'leaderboard',
+  CHAT = 'chat'
 }
 
-export interface ExerciseLog {
-  date: string;
-  exerciseName: string;
-  weight: number; // Carga em KG
-}
-
-export interface DailyWorkoutFeedback {
-  date: string;
-  rpe: number; // 1-10 Rate of Perceived Exertion
-  notes: string;
-}
-
-export interface WorkoutPlan {
-  id: string;
-  createdAt: string;
-  overview: string; // Resumo da estratégia
-  days: WorkoutDay[];
-  userFeedback?: string; // Feedback geral
-}
-
-// Novos tipos para Chat e Journal
 export interface ChatMessage {
   role: 'user' | 'model';
   text: string;
-  timestamp: number;
 }
 
-export interface JournalEntry {
-  id: string;
-  date: string; // YYYY-MM-DD
-  text: string;
-  timestamp: number;
+export interface TrainingPlan {
+  split: string;
+  days: {
+    day: string;
+    focus: string;
+    exercises: { 
+      name: string; 
+      sets: string; 
+      reps: string;
+      substitution?: string; // Alternative exercise
+      tip?: string; // Execution tip or injury warning
+    }[];
+  }[];
 }
 
-// Novos tipos para Dieta
-export interface Recipe {
-  name: string;
-  calories: string;
-  costEstimate: string; // Estimativa de custo
-  time: string;
-  ingredients: string[];
-  instructions: string[];
-  videoQuery: string; // Termo de busca para o YouTube
-  benefits: string; // Por que essa receita ajuda no objetivo
+export interface MartialArtsPlan {
+  style: string;
+  focus: string;
+  duration: string;
+  warmup: string[];
+  rounds: {
+    number: number;
+    name: string;
+    duration: string;
+    drills: string[];
+    focusPoint: string;
+  }[];
+  cooldown: string[];
 }
 
-export interface AppState {
-  points: number;
-  xp: number;
-  strikes: number;
-  missions: Mission[];
-  logs: DailyLog[];
-  hardcoreMode: boolean;
-  lastResetDate: string | null;
-  lastPunishmentDate?: string;
-  profile: UserProfile;
-  goals: Goal[];
-  aiAnalysis?: string;
-  progressLogs: ProgressEntry[];
-  alarms: Alarm[];
-  workoutPlan?: WorkoutPlan;
-  exerciseLogs: ExerciseLog[]; 
-  workoutFeedbacks: DailyWorkoutFeedback[];
-  workoutChatHistory: ChatMessage[];
-  workoutJournal: JournalEntry[];
-  // Novo campo
-  dietRecipes: Recipe[];
-}
-
-export interface Reward {
-  id: string;
-  label: string;
-  cost: number;
-  icon: string;
+export interface DietPlan {
+  calories: number;
+  meals: {
+    name: string;
+    items: string[];
+  }[];
 }
